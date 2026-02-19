@@ -1,0 +1,3 @@
+imagingcontrol4>=1.2.0
+imagingcontrol4pyqt6
+PyQt6>=6.0.0

@@ -1,0 +1,10 @@
+# general python
+numpy
+# imaging / camera
+opencv-python  # image analysis
+imagingcontrol4  # camera control
+pyqt6  # GUI
+# other connections
+pythonnet  # Elliptic Motor
+# simulation
+qutip  # mesolve
