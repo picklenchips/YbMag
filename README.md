@@ -1,4 +1,4 @@
-# Yt Magnetometer Control & Simulation
+# Yb Magnetometer Control & Simulation
 
 ### Current Organization
 ```
