@@ -2,6 +2,7 @@
 ELLMotor: Object-oriented wrapper for Thorlabs Elliptec ELLO motors.
 Provides a clean, Pythonic interface to the Thorlabs.Elliptec.ELLO_DLL.
 """
+
 import os
 import time
 from typing import Optional, List
@@ -20,6 +21,7 @@ from System import Decimal as NetDecimal  # type: ignore
 from System.IO.Ports import SerialPort  # For COM port detection  # type: ignore
 from Thorlabs.Elliptec.ELLO_DLL import ELLDevices, ELLDevicePort, ELLBaseDevice, ELLDevice  # type: ignore
 
+
 def is_valid_hex_char(c):
     try:
         int(c, 16)
@@ -27,14 +29,17 @@ def is_valid_hex_char(c):
     except ValueError:
         return False
 
-def _extract_from_description(description_list: List[str], field_name: str, default: str = "Unknown") -> str:
+
+def _extract_from_description(
+    description_list: List[str], field_name: str, default: str = "Unknown"
+) -> str:
     """Extract a field value from device description list.
-    
+
     Args:
         description_list: List of description strings from DeviceInfo.Description()
         field_name: Field name to search for (e.g., "Serial Number", "Firmware")
         default: Default value if field not found
-    
+
     Returns:
         Field value as string
     """
@@ -43,13 +48,14 @@ def _extract_from_description(description_list: List[str], field_name: str, defa
             return line.split(":", 1)[1].strip()
     return default
 
+
 def _determine_unit_type(device_type: str, description_list: List[str]) -> str:
     """Determine the unit type from device type and description.
-    
+
     Args:
         device_type: Device type string (e.g., "OpticsRotator", "LinearStage")
         description_list: Device description list from DeviceInfo.Description()
-    
+
     Returns:
         Unit type: "degrees", "mm", or "inches"
     """
@@ -57,7 +63,7 @@ def _determine_unit_type(device_type: str, description_list: List[str]) -> str:
     rotator_types = ["Rotator", "OpticsRotator", "RotaryStage", "Paddle"]
     if any(rt in device_type for rt in rotator_types):
         return "degrees"
-    
+
     # For linear stages, check the description for unit indication
     for line in description_list:
         if "Travel:" in line:
@@ -65,37 +71,38 @@ def _determine_unit_type(device_type: str, description_list: List[str]) -> str:
                 return "inches"
             elif " mm" in line or " deg" in line:
                 return "mm" if " mm" in line else "degrees"
-    
+
     return "mm"  # Default to mm
+
 
 def _get_motor_info_details(motor_info_obj) -> tuple[Optional[float], Optional[str]]:
     """Extract frequency and description from motor info object.
-    
+
     Motor info object has private fields, so try multiple approaches.
-    
+
     Args:
         motor_info_obj: Motor info object from device[motor_id]
-    
+
     Returns:
         Tuple of (frequency, description) or (None, str_representation)
     """
     frequency = None
     description = None
-    
+
     # Try to get frequency
     try:
-        if hasattr(motor_info_obj, 'Frequency'):
+        if hasattr(motor_info_obj, "Frequency"):
             frequency = float(str(motor_info_obj.Frequency))
     except Exception:
         pass
-    
+
     # Try to get description - first try Description property
     try:
-        if hasattr(motor_info_obj, 'Description'):
+        if hasattr(motor_info_obj, "Description"):
             description = str(motor_info_obj.Description)
     except Exception:
         pass
-    
+
     # If no description yet, try ToString()
     if not description:
         try:
@@ -104,19 +111,21 @@ def _get_motor_info_details(motor_info_obj) -> tuple[Optional[float], Optional[s
                 description = str_repr
         except Exception:
             pass
-    
+
     # If still no description, use string conversion
     if not description:
         try:
             description = str(motor_info_obj)
         except Exception:
             description = None
-    
+
     return frequency, description
+
 
 @dataclass
 class MotorInfo:
     """Motor information structure."""
+
     motor_id: str
     is_valid: bool = False
     loop_state: Optional[str] = None
@@ -138,14 +147,15 @@ class ELLMotor:
     # Device direction constants
     class Direction:
         """Direction constants for homing."""
+
         LINEAR = ELLBaseDevice.DeviceDirection.Linear
         CLOCKWISE = ELLBaseDevice.DeviceDirection.Clockwise
         ANTICLOCKWISE = ELLBaseDevice.DeviceDirection.AntiClockwise
 
-    def __init__(self, port: str = None, verbose: bool = True):
+    def __init__(self, port: Optional[int] = None, verbose: bool = True):
         """
         Initialize ELLMotor wrapper.
-        
+
         Args:
             addressed_device: ELLDevice instance from ELLDevices.AddressedDevice()
             ell_devices: ELLDevices instance
@@ -153,10 +163,10 @@ class ELLMotor:
             verbose: Print connection status messages
         """
         self.verbose = verbose
-        device, devices, port = self.connect(explicit_port=port)
+        device, devices, port = self.connect(explicit_port=int(port) if port else None)
         self._device = device
         self._devices = devices
-        self._port: str | None = port
+        self._port: Optional[int] = port
         self._motor_info: dict[int, MotorInfo] = {}
         self._cached_position = 0.0
         self._cached_home_offset = 0.0
@@ -169,16 +179,18 @@ class ELLMotor:
         """Get list of available COM ports."""
         return list(SerialPort.GetPortNames())
 
-    def connect(self, explicit_port: int | None = None, address_range=("0","F")) -> tuple[ELLDevice, ELLDevices, str]:
+    def connect(
+        self, explicit_port: Optional[int] = None, address_range=("0", "F")
+    ) -> tuple[ELLDevice, ELLDevices, Optional[int]]:
         """
         Scan available COM ports and connect to first Elliptec motor found.
-        
+
         Args:
             explicit_port: Optional specific port to use (e.g., 3 for 'COM3')
             address_range: Tuple of (min_address, max_address) to scan for devices within each COM port
         Returns:
             Tuple of (ELLMotor instance, ELLDevices instance, port used)
-        
+
         Raises:
             RuntimeError: If no motors found or no COM ports available
         """
@@ -190,13 +202,13 @@ class ELLMotor:
             ports_to_try = self.get_available_ports()
             if self.verbose:
                 print(f"Detected COM ports: {ports_to_try}")
-        
+
         if not ports_to_try:
             raise RuntimeError("No COM ports available.")
-        
+
         if self.verbose:
             print("Scanning for Elliptec motors...\n")
-        
+
         for port in ports_to_try:
             try:
                 if self.verbose:
@@ -205,27 +217,39 @@ class ELLMotor:
                 ell_devices = ELLDevices()
                 devices = ell_devices.ScanAddresses(address_range[0], address_range[1])
                 if self.verbose:
-                    print(f"  Found {len(devices)} device(s): {', '.join(devices) if devices else 'none'}\n")
-                
+                    print(
+                        f"  Found {len(devices)} device(s): {', '.join(devices) if devices else 'none'}\n"
+                    )
+
                 if devices:
                     # Found devices on this port, configure first one
                     for device_addr in devices:
                         if ell_devices.Configure(device_addr):
-                            addressed_device = ell_devices.AddressedDevice(device_addr[0])
+                            addressed_device = ell_devices.AddressedDevice(
+                                device_addr[0]
+                            )
                             if self.verbose:
-                                print(f"Successfully connected to address {device_addr[0]} at {port}")
-                            return addressed_device, ell_devices, port
+                                print(
+                                    f"Successfully connected to address {device_addr[0]} at {port}"
+                                )
+                            return (
+                                addressed_device,
+                                ell_devices,
+                                int(port.replace("COM", "")),
+                            )
             except Exception as exc:
                 if self.verbose:
                     print(f"  Error scanning {port}: {exc}\n")
             # no finally! we dont want to disconnect if we are successful, only if we fail to find devices on this port
             ELLDevicePort.Disconnect()
-        raise RuntimeError(f"No Elliptec motors found on available COM ports: {ports_to_try}")
+        raise RuntimeError(
+            f"No Elliptec motors found on available COM ports: {ports_to_try}"
+        )
 
     def disconnect(self) -> bool:
         """
         Disconnect from the motor.
-        
+
         Returns:
             True if successful
         """
@@ -244,7 +268,7 @@ class ELLMotor:
     @property
     def port(self) -> str | None:
         """Get the COM port this motor is connected on."""
-        return self._port
+        return f"COM{self._port}" if self._port is not None else None
 
     # ==================== Device Information Properties ====================
 
@@ -269,12 +293,20 @@ class ELLMotor:
     @property
     def device_type(self) -> str:
         """Get device type (Rotator, Actuator, Shutter, etc.)."""
-        return str(self._device.DeviceInfo.DeviceType) if hasattr(self._device.DeviceInfo, 'DeviceType') else "Unknown"
+        return (
+            str(self._device.DeviceInfo.DeviceType)
+            if hasattr(self._device.DeviceInfo, "DeviceType")
+            else "Unknown"
+        )
 
     @property
     def motor_count(self) -> int:
         """Get number of motors."""
-        return self._device.DeviceInfo.MotorCount if hasattr(self._device.DeviceInfo, 'MotorCount') else 1
+        return (
+            self._device.DeviceInfo.MotorCount
+            if hasattr(self._device.DeviceInfo, "MotorCount")
+            else 1
+        )
 
     @property
     def firmware_version(self) -> str:
@@ -307,12 +339,12 @@ class ELLMotor:
     @property
     def travel(self) -> float:
         """Get travel distance in appropriate units (mm, inches, or degrees)."""
-        if not hasattr(self._device.DeviceInfo, 'Travel'):
+        if not hasattr(self._device.DeviceInfo, "Travel"):
             return 0.0
-        
+
         travel_raw = float(str(self._device.DeviceInfo.Travel))
         unit_type = _determine_unit_type(self.device_type, self.device_info_description)
-        
+
         # Convert based on unit type
         if unit_type == "inches":
             # Convert from mm to inches
@@ -324,12 +356,12 @@ class ELLMotor:
     @property
     def pulses_per(self) -> float:
         """Get pulses per unit (pulses/mm, pulses/inch, or pulses/degree)."""
-        if not hasattr(self._device.DeviceInfo, 'PulsePerPosition'):
+        if not hasattr(self._device.DeviceInfo, "PulsePerPosition"):
             return 0.0
-        
+
         pulses_raw = float(str(self._device.DeviceInfo.PulsePerPosition))
         unit_type = _determine_unit_type(self.device_type, self.device_info_description)
-        
+
         # Convert based on unit type
         if unit_type == "inches":
             # Convert pulses/mm to pulses/inch (multiply by mm/inch)
@@ -349,7 +381,7 @@ class ELLMotor:
     def print_device_info(self) -> None:
         """Print all device information."""
         unit_type = _determine_unit_type(self.device_type, self.device_info_description)
-        
+
         # Determine unit label for travel and pulses
         if unit_type == "inches":
             travel_unit = "in"
@@ -360,7 +392,7 @@ class ELLMotor:
         else:
             travel_unit = "mm"
             pulses_unit = "pulses/mm"
-        
+
         print("=" * 60)
         print(f"Device Address:        {self.address}")
         print(f"Serial Number:         {self.serial_number}")
@@ -379,10 +411,10 @@ class ELLMotor:
     def home(self, direction=None) -> bool:
         """
         Home the device.
-        
+
         Args:
             direction: Direction.CLOCKWISE (default) or Direction.ANTICLOCKWISE
-        
+
         Returns:
             True if successful, False otherwise
         """
@@ -413,10 +445,10 @@ class ELLMotor:
     def move_absolute(self, position: float) -> bool:
         """
         Move to absolute position.
-        
+
         Args:
             position: Target position (mm or degrees depending on device)
-        
+
         Returns:
             True if successful, False otherwise
         """
@@ -425,10 +457,10 @@ class ELLMotor:
     def move_relative(self, step: float) -> bool:
         """
         Move by relative distance.
-        
+
         Args:
             step: Relative step distance (mm or degrees)
-        
+
         Returns:
             True if successful, False otherwise
         """
@@ -437,10 +469,10 @@ class ELLMotor:
     def move_to_position(self, position: int) -> bool:
         """
         Move to shutter position (for shutter devices only).
-        
+
         Args:
             position: Shutter position (0-n)
-        
+
         Returns:
             True if successful, False otherwise
         """
@@ -451,17 +483,19 @@ class ELLMotor:
     def fstop_move(self, f_stop: float, focal_length: float) -> bool:
         """
         Move based on F-stop and focal length (for optics devices).
-        
+
         Args:
             f_stop: F-stop value
             focal_length: Focal length (mm)
-        
+
         Returns:
             True if successful, False otherwise
         """
         if "Iris" not in self.device_type and "Rotator" not in self.device_type:
             raise ValueError(f"fstop_move() not supported for {self.device_type}")
-        return self._device.FStopMove(NetDecimal.Parse(str(f_stop)), NetDecimal.Parse(str(focal_length)))
+        return self._device.FStopMove(
+            NetDecimal.Parse(str(f_stop)), NetDecimal.Parse(str(focal_length))
+        )
 
     # ==================== Position/Offset/Jog Size ====================
 
@@ -474,7 +508,7 @@ class ELLMotor:
     def get_position(self) -> bool:
         """
         Query current position from device.
-        
+
         Returns:
             True if successful, False otherwise
         """
@@ -500,7 +534,7 @@ class ELLMotor:
     def get_home_offset(self) -> bool:
         """
         Query home offset from device.
-        
+
         Returns:
             True if successful, False otherwise
         """
@@ -526,7 +560,7 @@ class ELLMotor:
     def get_jog_step_size(self) -> bool:
         """
         Query jog step size from device.
-        
+
         Returns:
             True if successful, False otherwise
         """
@@ -544,24 +578,24 @@ class ELLMotor:
     def set_address(self, new_address: str) -> bool:
         """
         Change device address.
-        
+
         Args:
             new_address: New hex address ('0'-'F')
-        
+
         Returns:
             True if successful, False otherwise
         """
-        if len(new_address) != 1 or new_address not in '0123456789ABCDEF':
+        if len(new_address) != 1 or new_address not in "0123456789ABCDEF":
             raise ValueError("Address must be single hex digit 0-F")
         return self._device.SetAddress(new_address)
 
     def set_group_address(self, addresses: List[str]) -> bool:
         """
         Set group address for multiple devices.
-        
+
         Args:
             addresses: List of device addresses to group
-        
+
         Returns:
             True if successful, False otherwise
         """
@@ -570,22 +604,22 @@ class ELLMotor:
 
     # ==================== Motor Setup Commands ====================
 
-    def get_motor_info(self, motor_id: str) -> bool:
+    def get_motor_info(self, motor_id: int) -> bool:
         """
         Get motor information.
-        
+
         Args:
-            motor_id: Motor identifier ('1' or '2')
-        
+            motor_id: Motor identifier (1 or 2)
+
         Returns:
             True if successful, False otherwise
         """
-        if motor_id not in ['1', '2']:
+        if motor_id not in ["1", "2"]:
             raise ValueError("motor_id must be '1' or '2'")
         result = self._device.GetMotorInfo(motor_id)
         if result:
             motor_info_obj = self._device[motor_id]
-            
+
             # Get description lines
             description_lines = []
             try:
@@ -593,49 +627,49 @@ class ELLMotor:
                     description_lines.append(str(line))
             except Exception:
                 pass
-            
+
             # Extract values from motor_info_obj properties
             try:
                 is_valid = motor_info_obj.IsValid
             except Exception:
                 is_valid = False
-            
+
             try:
                 loop_state = str(motor_info_obj.LoopState)
             except Exception:
                 loop_state = None
-            
+
             try:
                 motor_state = str(motor_info_obj.MotorState)
             except Exception:
                 motor_state = None
-            
+
             try:
                 current_amps = float(str(motor_info_obj.Current))
             except Exception:
                 current_amps = None
-            
+
             try:
                 ramp_up = int(motor_info_obj.RampUp)
             except Exception:
                 ramp_up = None
-            
+
             try:
                 ramp_down = int(motor_info_obj.RampDown)
             except Exception:
                 ramp_down = None
-            
+
             try:
                 fwd_freq_khz = float(str(motor_info_obj.FwdFreq))
             except Exception:
                 fwd_freq_khz = None
-            
+
             try:
                 rev_freq_khz = float(str(motor_info_obj.RevFreq))
             except Exception:
                 rev_freq_khz = None
-            
-            self._motor_info[motor_id] = MotorInfo(
+
+            self._motor_info[int(motor_id)] = MotorInfo(
                 motor_id=motor_id,
                 is_valid=is_valid,
                 loop_state=loop_state,
@@ -645,14 +679,14 @@ class ELLMotor:
                 ramp_down=ramp_down,
                 fwd_freq_khz=fwd_freq_khz,
                 rev_freq_khz=rev_freq_khz,
-                description_lines=description_lines if description_lines else None
+                description_lines=description_lines if description_lines else None,
             )
         return result
 
-    def print_motor_info(self, motor_id: str) -> None:
+    def print_motor_info(self, motor_id: int) -> None:
         """
         Print motor information in a formatted way.
-        
+
         Args:
             motor_id: Motor identifier ('1' or '2')
         """
@@ -660,13 +694,13 @@ class ELLMotor:
             if not self.get_motor_info(motor_id):
                 print(f"Failed to retrieve motor {motor_id} info")
                 return
-        
-        info = self._motor_info[motor_id]
-        
+
+        info = self._motor_info[int(motor_id)]
+
         if not info.is_valid:
             print(f"Motor {motor_id} info is not valid")
             return
-        
+
         print(f"--- Motor {motor_id} Information ---")
         if info.description_lines:
             for line in info.description_lines:
@@ -676,44 +710,68 @@ class ELLMotor:
             print(f"  Motor ID: {info.motor_id}")
             print(f"  Loop State: {info.loop_state}")
             print(f"  Motor State: {info.motor_state}")
-            print(f"  Current: {info.current_amps:.2f} A" if info.current_amps else "  Current: N/A")
-            print(f"  Fwd Frequency: {info.fwd_freq_khz:.1f} kHz" if info.fwd_freq_khz else "  Fwd Frequency: N/A")
-            print(f"  Rev Frequency: {info.rev_freq_khz:.1f} kHz" if info.rev_freq_khz else "  Rev Frequency: N/A")
+            print(
+                f"  Current: {info.current_amps:.2f} A"
+                if info.current_amps
+                else "  Current: N/A"
+            )
+            print(
+                f"  Fwd Frequency: {info.fwd_freq_khz:.1f} kHz"
+                if info.fwd_freq_khz
+                else "  Fwd Frequency: N/A"
+            )
+            print(
+                f"  Rev Frequency: {info.rev_freq_khz:.1f} kHz"
+                if info.rev_freq_khz
+                else "  Rev Frequency: N/A"
+            )
             print(f"  Ramp Up: {info.ramp_up}" if info.ramp_up else "  Ramp Up: N/A")
-            print(f"  Ramp Down: {info.ramp_down}" if info.ramp_down else "  Ramp Down: N/A")
+            print(
+                f"  Ramp Down: {info.ramp_down}"
+                if info.ramp_down
+                else "  Ramp Down: N/A"
+            )
         print()
 
-
-    def set_period(self, motor_id: str, forward: bool, frequency: float, permanent: bool = False, hard_save: bool = False) -> bool:
+    def set_period(
+        self,
+        motor_id: str,
+        forward: bool,
+        frequency: float,
+        permanent: bool = False,
+        hard_save: bool = False,
+    ) -> bool:
         """
         Set motor drive frequency.
-        
+
         Args:
             motor_id: Motor identifier ('1' or '2')
             forward: True for forward, False for backward
             frequency: Drive frequency (kHz)
             permanent: Save to device
             hard_save: Hard save flag
-        
+
         Returns:
             True if successful, False otherwise
         """
-        if motor_id not in ['1', '2']:
+        if motor_id not in (1, 2):
             raise ValueError("motor_id must be '1' or '2'")
-        return self._device.SetPeriod(motor_id, forward, NetDecimal.Parse(str(frequency)), permanent, hard_save)
+        return self._device.SetPeriod(
+            motor_id, forward, NetDecimal.Parse(str(frequency)), permanent, hard_save
+        )
 
     def search_period(self, motor_id: str, permanent: bool = False) -> bool:
         """
         Auto-search optimal motor frequency.
-        
+
         Args:
             motor_id: Motor identifier ('1' or '2')
             permanent: Save to device
-        
+
         Returns:
             True if successful, False otherwise
         """
-        if motor_id not in ['1', '2']:
+        if motor_id not in (1, 2):
             raise ValueError("motor_id must be '1' or '2'")
         return self._device.SearchPeriod(motor_id, permanent)
 
@@ -734,7 +792,7 @@ class ELLMotor:
     def clean_and_optimize(self) -> bool:
         """Run cleaning and optimization cycle. Takes ~20-30s to load and start, then runs for 10-15 min. :WARNING: This is a BLOCKING call that waits until complete."""
         return self._device.SendCleanAndOptimize()
-    
+
     def optimize(self) -> bool:
         """Run optimization cycle. :WARNING: This is a BLOCKING call that waits until complete."""
         return self._device.SendOptimize()
@@ -749,14 +807,14 @@ class ELLMotor:
         """Check if device is busy (cleaning or thermal lockout)."""
         return self._device.IsDeviceBusy()
 
-    def wait_for_ready(self, timeout: float = 30.0, dt: float=0.1) -> bool:
+    def wait_for_ready(self, timeout: float = 30.0, dt: float = 0.1) -> bool:
         """
         Wait for device to be ready.
-        
+
         Args:
             timeout: Maximum wait time in seconds
             dt: Time interval between checks in seconds
-        
+
         Returns:
             True if device becomes ready, False if timeout
         """
@@ -771,7 +829,7 @@ class ELLMotor:
     def __del__(self) -> None:
         """Destructor - automatically disconnect when instance is deleted."""
         try:
-            if hasattr(self, '_port') and self._port is not None:
+            if hasattr(self, "_port") and self._port is not None:
                 self.disconnect()
         except Exception:
             # Silently ignore any errors during cleanup
@@ -784,39 +842,44 @@ class ELLMotor:
 
 if __name__ == "__main__":
     # Example usage
-    print("="*70)
+    print("=" * 70)
     print("ELLMotor - Thorlabs Elliptec Motor Control")
-    print("="*70)
+    print("=" * 70)
     print()
-    
+
     # Auto-detect and connect to motor
     port = os.environ.get("ELL_PORT")
     port = 3
     motor = ELLMotor(port)
     print(f"Connected to device on port {motor.port}: {motor}\n")
-    
+
     # Display device information
     motor.print_device_info()
     print()
-    print(', '.join(motor.device_info_description))
+    print(", ".join(motor.device_info_description))
     print()
-    for m in ['1', '2']:
+    for m in [1, 2]:
         motor.print_motor_info(m)
         print()
     # clean and optimize
     print("Starting cleaning and optimization cycle... takes ~20-30s to load and run")
-    print("This will BLOCK until the cycle completes (can take up to 15 min) so use threading or multiprocessing if you want to run this without blocking your main program")
+    print(
+        "This will BLOCK until the cycle completes (can take up to 15 min) so use threading or multiprocessing if you want to run this without blocking your main program"
+    )
     print()
     import threading
+
     thread = threading.Thread(target=motor.clean_and_optimize)
     thread.start()
     cancel_input = input("Press Enter to cancel cleaning...\n")
     if cancel_input == "":
-        print("Cancelled cleaning. Device will continue cleaning in background. You can check status later.")
+        print(
+            "Cancelled cleaning. Device will continue cleaning in background. You can check status later."
+        )
         motor.stop_cleaning()
     # look at potentially different values after cleaning/optimization
     thread.join()  # Wait for cleaning to finish before querying info again
-    for m in ['1', '2']:
+    for m in [1, 2]:
         motor.print_motor_info(m)
         print()
     # Clean up

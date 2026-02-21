@@ -11,10 +11,7 @@ from PyQt6.QtCore import (
     QSortFilterProxyModel,
     QRegularExpression,
 )
-from PyQt6.QtWidgets import QTreeView, QStyledItemDelegate, QWidget
-from PyQt6.QtGui import QPainter
 from typing import Optional, Callable, List
-from weakref import ref
 
 from imagingcontrol4.properties import (
     Property,
@@ -117,7 +114,7 @@ class PropertyTreeNode:
 
             def notification_handler(prop):
                 try:
-                    new_available = prop.is_available()
+                    new_available = prop.is_available
                     if self.prev_available_ != new_available:
                         item_changed(self)
                         self.prev_available_ = new_available
@@ -183,7 +180,6 @@ class PropertyTreeModel(QAbstractItemModel):
             self.tree_root_.children_.append(prop_root)
             self.prop_root_ = prop_root
         except Exception as e:
-            print(f"Error creating property tree root: {e}")
             self.prop_root_ = None
 
     def rootIndex(self) -> QModelIndex:
@@ -303,7 +299,7 @@ class FilterPropertiesProxy(QSortFilterProxyModel):
         self.invalidate()
 
     def flags(self, index: QModelIndex) -> Qt.ItemFlag:
-        """Get item flags"""
+        """Get item flags - don't show blue selection (matches C++)"""
         flags = super().flags(index)
         return flags & ~Qt.ItemFlag.ItemIsSelectable
 
@@ -341,9 +337,5 @@ class FilterPropertiesProxy(QSortFilterProxyModel):
                 return self.filter_func_(child.prop)
 
             return True
-        except Exception as e:
-            print(f"[filterAcceptsRow] error for {child.display_name}: {e}")
-            import traceback
-
-            traceback.print_exc()
+        except Exception:
             return False

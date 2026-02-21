@@ -31,6 +31,9 @@ from imagingcontrol4.grabber import Grabber
 from imagingcontrol4.devenum import DeviceEnum, DeviceInfo, TransportLayerType
 from imagingcontrol4.library import Library
 
+# local imports
+from resources.style_manager import get_style_manager
+
 
 class DeviceSelectionDialog(QDialog):
     """Dialog for selecting a camera device"""
@@ -637,6 +640,10 @@ class DeviceSelectionDialog(QDialog):
             )
             return
 
+        print(
+            f"[_on_ok] is_device_open={self.grabber.is_device_open}, is_streaming={self.grabber.is_streaming}"
+        )
+
         try:
             # Check if selected device is already open
             already_open = False
@@ -646,21 +653,42 @@ class DeviceSelectionDialog(QDialog):
                     # Compare using unique_name which uniquely identifies a device
                     if current_device_info.unique_name == device.unique_name:
                         already_open = True
-                except Exception:
-                    pass
+                        print("[_on_ok] Same device already open, accepting")
+                except Exception as e:
+                    print(f"[_on_ok] unique_name comparison failed: {e}")
 
             if already_open:
                 # Already connected to this device, just close dialog
                 self.accept()
                 return
 
-            # Close existing device if a different one is open
+            # Close existing device if one is open
             if self.grabber.is_device_open:
+                print("[_on_ok] Closing existing device before opening new one")
+                try:
+                    self.grabber.stream_stop()
+                except Exception as e:
+                    print(f"[_on_ok] stream_stop() error: {e}")
                 self.grabber.device_close()
+                print(
+                    f"[_on_ok] device_close() done, is_device_open={self.grabber.is_device_open}"
+                )
 
+                # Force garbage collection to ensure C++ resources are released
+                import gc
+
+                print("[_on_ok] Running garbage collection...")
+                gc.collect()
+                print("[_on_ok] GC complete")
+
+            print(f"[_on_ok] Opening device: {device.model_name} [{device.serial}]")
             self.grabber.device_open(device)
+            print(
+                f"[_on_ok] device_open() succeeded, is_device_open={self.grabber.is_device_open}"
+            )
             self.accept()
         except Exception as e:
+            print(f"[_on_ok] FAILED: {e}")
             QMessageBox.critical(
                 self, "Error Opening Device", f"Failed to open device:\n{str(e)}"
             )
@@ -668,4 +696,5 @@ class DeviceSelectionDialog(QDialog):
     def apply_theme(self) -> None:
         """Apply the current theme to this dialog"""
         if self.resource_selector:
-            self.resource_selector.apply_theme(self)
+            style_manager = get_style_manager()
+            style_manager.apply_theme(self.resource_selector.get_theme())

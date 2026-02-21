@@ -3,7 +3,7 @@ Enumeration property control
 Translated from C++ PropEnumerationControl.h
 """
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QEvent
 from PyQt6.QtWidgets import QComboBox, QLineEdit, QMessageBox, QWidget
 from typing import Optional
 
@@ -35,9 +35,11 @@ class PropEnumerationControl(PropControlBase):
             self.edit.setReadOnly(True)
         else:
             self.combo = QComboBox(self)
-            self.combo.currentIndexChanged.connect(self._on_combo_changed)
 
         self.update_all()
+
+        if self.combo:
+            self.combo.currentIndexChanged.connect(self._on_combo_changed)
 
         if layout := self.layout():
             if self.combo:
@@ -45,15 +47,26 @@ class PropEnumerationControl(PropControlBase):
             if self.edit:
                 layout.addWidget(self.edit)
 
+        if self.combo:
+            self.combo.installEventFilter(self)
+        if self.edit:
+            self.edit.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.FocusIn:
+            if watched in (self.combo, self.edit):
+                self.on_prop_selected()
+        return super().eventFilter(watched, event)
+
     def _on_combo_changed(self, index: int):
         """Handle combo box selection change"""
-        if index < 0:
+        if index < 0 or not self.combo:
             return
 
-        value = self.combo.currentText() if self.combo else None
+        value = self.combo.currentData()
 
         def set_func(val):
-            self.prop.value = val
+            self.prop.int_value = val
 
         if not self.prop_set_value(value, set_func):
             QMessageBox.warning(self, "Set property", "Failed to set property value")
@@ -76,7 +89,12 @@ class PropEnumerationControl(PropControlBase):
                 except Exception:
                     selected_entry = None
 
-                for entry in self.prop.entries:
+                try:
+                    entries = list(self.prop.entries)
+                except Exception:
+                    entries = []
+
+                for entry in entries:
                     try:
                         if not entry.is_available:
                             continue
@@ -88,7 +106,7 @@ class PropEnumerationControl(PropControlBase):
 
                         self.combo.addItem(name, val)
 
-                        if selected_entry and entry == selected_entry:
+                        if selected_entry is not None and entry == selected_entry:
                             self.combo.setCurrentIndex(self.combo.count() - 1)
                             selected_found = True
                     except Exception:
@@ -97,8 +115,8 @@ class PropEnumerationControl(PropControlBase):
                 if not selected_found:
                     self.combo.setCurrentIndex(-1)
 
-            except Exception as e:
-                print(f"Error updating enumeration control: {e}")
+            except Exception:
+                pass
             finally:
                 self.combo.blockSignals(False)
 

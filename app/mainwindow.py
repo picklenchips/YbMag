@@ -1,4 +1,5 @@
 from threading import Lock
+import gc
 
 # PyQT6 imports
 from PyQt6.QtCore import (
@@ -38,10 +39,11 @@ from imagingcontrol4.display import DisplayRenderPosition
 from imagingcontrol4.propconstants import PropId
 from imagingcontrol4.properties import Property
 
-from resourceselector import get_resource_selector
+from resources.resourceselector import get_resource_selector
+from resources.style_manager import get_style_manager, ThemeMode
 
 # local imports
-from displaywindow import DisplayWidget
+from displaywindow import EnhancedDisplayWidget
 from dialogs import PropertyDialog, DeviceSelectionDialog, SettingsDialog
 
 GOT_PHOTO_EVENT = QEvent.Type(QEvent.Type.User + 1)
@@ -82,6 +84,8 @@ class MainWindow(QMainWindow):
         self.video_capture_pause = False
 
         self.device_property_map = None
+        self._trigger_mode_prop = None
+        self._trigger_mode_notify = None
 
         self.grabber = Grabber()
         self.grabber.event_add_device_lost(
@@ -108,6 +112,9 @@ class MainWindow(QMainWindow):
 
             def frames_queued(self, sink: QueueSink):
                 buf = sink.pop_output_buffer()
+
+                # Update display widget with current buffer for pixel inspection
+                main_window.video_widget.set_current_buffer(buf)
 
                 # Connect the buffer's chunk data to the device's property map
                 # This allows for properties backed by chunk data to be updated
@@ -289,9 +296,12 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.record_act)
         toolbar.addAction(self.record_stop_act)
 
-        self.video_widget = DisplayWidget()
+        self.video_widget = EnhancedDisplayWidget()
         self.video_widget.setMinimumSize(640, 480)
         self.setCentralWidget(self.video_widget)
+
+        # Connect ROI selection signal
+        self.video_widget.roi_selected.connect(self.onROISelected)
 
         status_bar = self.statusBar()
         assert status_bar is not None
@@ -300,25 +310,20 @@ class MainWindow(QMainWindow):
         status_bar.addPermanentWidget(self.statistics_label)
         status_bar.addPermanentWidget(QLabel("  "))
 
+        # Pixel info label (right side of status bar, after statistics)
+        self.pixel_info_label = QLabel("", status_bar)
+        self.pixel_info_label.setStyleSheet("color: #888; font-family: monospace;")
+        status_bar.addPermanentWidget(self.pixel_info_label)
+
+        # Connect pixel info signal
+        self.video_widget.pixel_info.connect(self.pixel_info_label.setText)
+        status_bar.addPermanentWidget(QLabel("  "))
+
         # Camera label as clickable button
         self.camera_label = QPushButton("No Device", status_bar)
         self.camera_label.setFlat(True)
         self.camera_label.setCheckable(True)
-        self.camera_label.setStyleSheet(
-            """
-            QPushButton {
-                border: none;
-                padding: 2px 8px;
-                text-align: left;
-            }
-            QPushButton:hover {
-                background-color: palette(midlight);
-            }
-            QPushButton:checked {
-                background-color: palette(mid);
-            }
-        """
-        )
+        self.camera_label.setObjectName("cameraLabel")
         self.camera_label.clicked.connect(self.onCameraLabelClicked)
         status_bar.addPermanentWidget(self.camera_label)
 
@@ -328,19 +333,75 @@ class MainWindow(QMainWindow):
 
         # Apply the initial theme (important for dark mode on startup)
         selector = get_resource_selector()
-        selector.apply_theme(self)
+        style_manager = get_style_manager()
+        style_manager.apply_theme(selector.get_theme())
 
     def onCloseDevice(self):
-        if self.grabber.is_streaming:
-            self.startStopStream()
+        print(
+            f"[onCloseDevice] is_device_open={self.grabber.is_device_open}, is_streaming={self.grabber.is_streaming}"
+        )
+
+        if self.capture_to_video:
+            self.onStopCaptureVideo()
+
+        # Always attempt stream_stop, even if is_streaming reports False,
+        # to handle edge cases where the flag is stale.
+        try:
+            self.grabber.stream_stop()
+            print("[onCloseDevice] stream_stop() succeeded")
+        except Exception as e:
+            print(f"[onCloseDevice] stream_stop() error (may be expected): {e}")
+
+        # Release ALL references to IC4 native objects before device_close().
+        # The IC4 C library ref-counts native handles; if any Python object still
+        # wraps one, the driver considers the device "in use" and a subsequent
+        # device_open() will fail with "Device already opened".
+
+        # 1. Clear the ImageBuffer held by the display widget (set every frame)
+        self.video_widget.set_current_buffer(None)
+
+        # 2. Unregister trigger-mode notification and release the Property ref
+        if self._trigger_mode_prop is not None and self._trigger_mode_notify is not None:
+            try:
+                self._trigger_mode_prop.event_remove_notification(
+                    self._trigger_mode_notify
+                )
+            except Exception:
+                pass
+        self._trigger_mode_prop = None
+        self._trigger_mode_notify = None
+
+        # 3. If the property dialog is alive, clear its model so it drops all
+        #    Property / PropertyMap handles
+        if self.property_dialog is not None:
+            for tree in self.property_dialog._trees.values():
+                tree.clear_model()
+            self.property_dialog._map = None
+            self.property_dialog._grabber = None
+
+        # 4. Clear our own property map reference
+        self.device_property_map = None
+
+        # 5. Tell the display to drop its current buffer
+        self.display.display_buffer(None)
+
+        # 6. Force GC so Python releases the C handles
+        gc.collect()
 
         try:
             self.grabber.device_close()
-        except:
-            pass
-
-        self.device_property_map = None
-        self.display.display_buffer(None)
+            print(
+                f"[onCloseDevice] device_close() succeeded, is_device_open={self.grabber.is_device_open}"
+            )
+            print("[onCloseDevice] *** DEVICE CLOSED ***")
+        except Exception as e:
+            print(f"[onCloseDevice] device_close() FAILED: {e}")
+            QMessageBox.warning(
+                self,
+                "Warning",
+                f"Failed to close device: {e}",
+                QMessageBox.StandardButton.Ok,
+            )
 
         self.updateCameraLabel()
         self.updateControls()
@@ -459,6 +520,26 @@ class MainWindow(QMainWindow):
         with self.shoot_photo_mutex:
             self.shoot_photo = True
 
+    def onROISelected(self, offset_x: int, offset_y: int, width: int, height: int):
+        """Handle ROI selection from the display widget.
+
+        Args:
+            offset_x: X offset of ROI in camera coordinates
+            offset_y: Y offset of ROI in camera coordinates
+            width: Width of ROI in pixels
+            height: Height of ROI in pixels
+        """
+        print(
+            f"ROI Selected - Offset: ({offset_x}, {offset_y}), Size: {width}x{height}"
+        )
+
+        # TODO: Add UI to confirm and apply ROI to camera
+        # For now, just print the values
+        # Future implementation could:
+        # 1. Show a dialog to confirm the ROI
+        # 2. Set camera properties: PropId.OFFSET_X, PropId.OFFSET_Y, PropId.WIDTH, PropId.HEIGHT
+        # 3. Restart the stream with new ROI settings
+
     def onUpdateStatisticsTimer(self):
         if not self.grabber.is_device_valid:
             return
@@ -496,7 +577,10 @@ class MainWindow(QMainWindow):
         self.device_property_map = self.grabber.device_property_map
 
         trigger_mode = self.device_property_map.find(PropId.TRIGGER_MODE)
-        trigger_mode.event_add_notification(self.updateTriggerControl)
+        self._trigger_mode_prop = trigger_mode
+        self._trigger_mode_notify = trigger_mode.event_add_notification(
+            self.updateTriggerControl
+        )
 
         self.updateCameraLabel()
 
@@ -658,18 +742,16 @@ class MainWindow(QMainWindow):
             self.record_act.setIcon(self.record_start_icon)
         self.record_stop_act.setIcon(self.record_stop_icon)
 
-    def _on_theme_changed(self, theme: str):
+    def _on_theme_changed(self, theme: ThemeMode):
         """Handle theme change from settings dialog"""
         resource_selector = get_resource_selector()
+        style_manager = get_style_manager()
 
         # Reload icons for new theme
         self._reload_icons()
 
         # Apply theme to main window and all widgets
-        resource_selector.apply_theme(self)
-
-        # Also apply to the camera label button specifically to ensure text color updates
-        self.camera_label.setPalette(self.palette())
+        style_manager.apply_theme(theme)
 
         # Apply theme to open dialogs
         if self.property_dialog is not None and self.property_dialog.isVisible():
@@ -680,17 +762,7 @@ class MainWindow(QMainWindow):
         ):
             self.device_selection_dialog.apply_theme()
         if self.settings_dialog is not None and self.settings_dialog.isVisible():
-            resource_selector.apply_theme(self.settings_dialog)
-
-        # Apply theme to the application for title bar and other system elements
-        app = QApplication.instance()
-        if app and isinstance(app, QApplication):
-            # Get the palette from the main window after theming
-            app_palette = self.palette()
-            # Update all top-level windows
-            for widget in app.topLevelWidgets():
-                if widget != self:
-                    widget.setPalette(app_palette)
+            style_manager.apply_theme(theme)
 
     def onUISettings(self):
         """Open the UI settings dialog"""
@@ -704,10 +776,10 @@ class MainWindow(QMainWindow):
         self.settings_dialog = SettingsDialog(
             resource_selector,
             parent=self,
-            on_theme_changed=self._on_theme_changed,
+            on_theme_changed=self._on_theme_changed,  # type: ignore
         )
         # Apply current theme to the settings dialog
-        resource_selector.apply_theme(self.settings_dialog)
+        get_style_manager().apply_theme(resource_selector.get_theme())
         self.settings_dialog.finished.connect(self._onSettingsDialogClosed)
         self.settings_dialog.show()
 

@@ -1,6 +1,4 @@
-from PyQt6.QtGui import QPalette, QIcon, QColor
-from PyQt6.QtCore import QFileSelector
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtGui import QPalette, QIcon
 from pathlib import Path
 from typing import Literal
 from datetime import datetime
@@ -18,10 +16,9 @@ def get_resource_selector():
 
 
 def _is_dark_mode() -> bool:
-    """Determine if the system is in dark mode based on palette lightness"""
-    cur_time = datetime.now().astimezone()
-    print(cur_time)
+    """Determine if the system is in dark mode based on palette lightness and device time"""
     # Simple heuristic: assume dark mode is more likely in the evening/night
+    cur_time = datetime.now().astimezone()
     if cur_time.hour < 7 or cur_time.hour >= 19:
         return True
     default_palette = QPalette()
@@ -87,44 +84,3 @@ class ResourceSelector:
             if Path(fallback_path).exists():
                 icon_path = str(fallback_path)
         return QIcon(icon_path)
-
-    def apply_theme(self, widget: QWidget) -> None:
-        """Apply the current theme to a widget and all its children"""
-        palette = QPalette()
-
-        isLight = self.theme == "theme_light"
-
-        if isLight:
-            # Light theme
-            bg_color = QColor(255, 255, 255)  # White
-            text_color = QColor(0, 0, 0)  # Black
-            mid_color = QColor(200, 200, 200)  # Light grey for midlight
-            dark_color = QColor(150, 150, 150)  # Grey for mid
-        else:  # theme_dark
-            # Dark theme
-            bg_color = QColor(0x18, 0x18, 0x18)  # Dark grey
-            text_color = QColor(255, 255, 255)  # White
-            mid_color = QColor(0x25, 0x25, 0x25)  # Slightly lighter grey
-            dark_color = QColor(0x28, 0x28, 0x28)  # Medium dark grey
-
-        palette.setColor(QPalette.ColorRole.Window, bg_color)
-        palette.setColor(QPalette.ColorRole.WindowText, text_color)
-        palette.setColor(QPalette.ColorRole.Base, bg_color)
-        palette.setColor(QPalette.ColorRole.Text, text_color)
-        palette.setColor(QPalette.ColorRole.Button, bg_color)
-        palette.setColor(QPalette.ColorRole.ButtonText, text_color)
-        palette.setColor(QPalette.ColorRole.Midlight, mid_color)
-        palette.setColor(QPalette.ColorRole.Mid, dark_color)
-        palette.setColor(QPalette.ColorRole.Dark, text_color)
-        palette.setColor(QPalette.ColorRole.Shadow, text_color)
-        palette.setColor(QPalette.ColorRole.Link, text_color)
-        palette.setColor(QPalette.ColorRole.Highlight, mid_color)
-        palette.setColor(
-            QPalette.ColorRole.HighlightedText, bg_color if isLight else text_color
-        )
-
-        widget.setPalette(palette)
-
-        # Recursively apply to all children
-        for child in widget.findChildren(QWidget):
-            child.setPalette(palette)

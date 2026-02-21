@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import QTextEdit
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QTextBlockFormat, QTextCursor
 from typing import Optional
+import math
 
 from imagingcontrol4.properties import (
     Property,
@@ -17,6 +18,38 @@ from imagingcontrol4.properties import (
     PropBoolean,
     PropCategory,
 )
+
+
+def _int_value_to_string(val: int, rep) -> str:
+    """Format integer value based on representation (matches C++ PropIntControl::value_to_string)"""
+    try:
+        rep_name = str(rep).upper()
+        if "BOOLEAN" in rep_name:
+            return "True" if val else "False"
+        elif "HEX" in rep_name:
+            return f"0x{val:x}"
+        elif "MAC" in rep_name:
+            return ":".join([f"{(val >> (40 - i*8)) & 0xFF:02x}" for i in range(6)])
+        elif "IPV4" in rep_name:
+            return f"{(val >> 24) & 0xFF}.{(val >> 16) & 0xFF}.{(val >> 8) & 0xFF}.{val & 0xFF}"
+    except Exception:
+        pass
+    return str(val)
+
+
+def _float_text_from_value(val: float, notation=None, precision: int = 6) -> str:
+    """Format float value based on display notation (matches C++ PropFloatControl::textFromValue)"""
+    try:
+        notation_name = str(notation).upper() if notation else ""
+        if "SCIENTIFIC" in notation_name:
+            return f"{val:.{precision}E}"
+        if val >= math.pow(10, precision):
+            return f"{val:.0f}"
+        else:
+            # G format for general precision
+            return f"{val:.{precision}g}"
+    except Exception:
+        return str(val)
 
 
 class PropertyInfoBox(QTextEdit):
@@ -57,8 +90,10 @@ class PropertyInfoBox(QTextEdit):
             else:
                 text += "Access: Readable, Writable<br/>"
 
-            # Add type-specific information
-            if isinstance(prop, PropInteger):
+            # Type-specific information (matches C++ switch on prop.type())
+            if isinstance(prop, PropCategory):
+                text += "Type: Category<br/>"
+            elif isinstance(prop, PropInteger):
                 text += self._show_integer_info(prop)
             elif isinstance(prop, PropFloat):
                 text += self._show_float_info(prop)
@@ -68,46 +103,42 @@ class PropertyInfoBox(QTextEdit):
                 text += self._show_enumeration_info(prop)
             elif isinstance(prop, PropBoolean):
                 text += self._show_boolean_info(prop)
-            elif isinstance(prop, PropCategory):
-                text += "Type: Category<br/>"
 
             text += "</p>"
             self.setHtml(text)
         except Exception as ex:
             self.setText(str(ex))
 
-        # Disable selection and editing
+        # Disable selection
         self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self.setReadOnly(True)
         self.setContentsMargins(8, 8, 8, 8)
         self.setStyleSheet("QTextEdit { font-size: 13px; }")
 
-        # Set line spacing
+        # Line spacing
         doc = self.document()
         if doc:
             current_block = doc.firstBlock()
             if current_block.isValid():
                 cursor = QTextCursor(current_block)
                 block_format = current_block.blockFormat()
-                # Use integer value 0 for ProportionalHeight
-                block_format.setLineHeight(160, 0)
+                block_format.setLineHeight(160, 0)  # ProportionalHeight
                 cursor.setBlockFormat(block_format)
                 current_block = current_block.next()
 
                 while current_block.isValid():
                     text_cursor = QTextCursor(current_block)
                     block_format = current_block.blockFormat()
-                    block_format.setLineHeight(120, 0)
+                    block_format.setLineHeight(120, 0)  # ProportionalHeight
                     text_cursor.setBlockFormat(block_format)
                     current_block = current_block.next()
 
     def _show_string_info(self, prop: PropString) -> str:
-        """Show information about a string property"""
+        """Show string property info (matches C++ showStringInfo)"""
         text = "Type: String<br/>"
 
         try:
             val = prop.value
-            # Escape @ symbols
             val = val.replace("@", "<span>@</span>")
             text += f"Value: {val}<br/>"
         except Exception as ex:
@@ -122,8 +153,13 @@ class PropertyInfoBox(QTextEdit):
         return text
 
     def _show_integer_info(self, prop: PropInteger) -> str:
-        """Show information about an integer property"""
+        """Show integer property info (matches C++ showIntegerInfo)"""
         text = "Type: Integer<br/>"
+
+        try:
+            rep = prop.representation
+        except Exception:
+            rep = None
 
         try:
             unit = prop.unit
@@ -134,35 +170,64 @@ class PropertyInfoBox(QTextEdit):
 
         try:
             val = prop.value
-            text += f"Value: {val}<br/>"
+            text += f"Value: {_int_value_to_string(val, rep)}<br/>"
         except Exception as ex:
             text += f"Value: <span style='color:red'>{str(ex)}</span><br/>"
 
         if not prop.is_readonly:
             try:
-                minimum = prop.minimum
-                text += f"Minimum: {minimum}<br/>"
+                text += f"Minimum: {prop.minimum}<br/>"
             except Exception:
                 pass
 
             try:
-                maximum = prop.maximum
-                text += f"Maximum: {maximum}<br/>"
+                text += f"Maximum: {prop.maximum}<br/>"
             except Exception:
                 pass
 
+            # Increment mode handling (matches C++ switch on incrementMode)
             try:
-                increment = prop.increment
-                if increment:
-                    text += f"Increment: {increment}<br/>"
+                inc_mode = prop.increment_mode
+                inc_mode_name = str(inc_mode).upper()
+
+                if "INCREMENT" in inc_mode_name and "NONE" not in inc_mode_name:
+                    try:
+                        text += f"Increment: {prop.increment}<br/>"
+                    except Exception as ex:
+                        text += (
+                            f"Increment: <span style='color:red'>{str(ex)}</span><br/>"
+                        )
+                elif "VALUESET" in inc_mode_name or "VALUE_SET" in inc_mode_name:
+                    try:
+                        value_set = prop.valid_value_set
+                        vals = ", ".join(str(v) for v in value_set)
+                        text += f"Valid Value Set: {vals}<br/>"
+                    except Exception as ex:
+                        text += f"Valid Value Set: <span style='color:red'>{str(ex)}</span><br/>"
             except Exception:
-                pass
+                # Fallback: try simple increment
+                try:
+                    inc = prop.increment
+                    if inc:
+                        text += f"Increment: {inc}<br/>"
+                except Exception:
+                    pass
 
         return text
 
     def _show_float_info(self, prop: PropFloat) -> str:
-        """Show information about a float property"""
+        """Show float property info (matches C++ showFloatInfo)"""
         text = "Type: Float<br/>"
+
+        try:
+            notation = prop.display_notation
+        except Exception:
+            notation = None
+
+        try:
+            precision = prop.display_precision
+        except Exception:
+            precision = 6
 
         try:
             unit = prop.unit
@@ -173,34 +238,58 @@ class PropertyInfoBox(QTextEdit):
 
         try:
             val = prop.value
-            text += f"Value: {val}<br/>"
+            text += f"Value: {_float_text_from_value(val, notation, precision)}<br/>"
         except Exception as ex:
             text += f"Value: <span style='color:red'>{str(ex)}</span><br/>"
 
         if not prop.is_readonly:
             try:
                 minimum = prop.minimum
-                text += f"Minimum: {minimum}<br/>"
+                text += f"Minimum: {_float_text_from_value(minimum, notation, precision)}<br/>"
             except Exception:
                 pass
 
             try:
                 maximum = prop.maximum
-                text += f"Maximum: {maximum}<br/>"
+                text += f"Maximum: {_float_text_from_value(maximum, notation, precision)}<br/>"
             except Exception:
                 pass
 
+            # Increment mode handling
             try:
-                increment = prop.increment
-                if increment:
-                    text += f"Increment: {increment}<br/>"
+                inc_mode = prop.increment_mode
+                inc_mode_name = str(inc_mode).upper()
+
+                if "INCREMENT" in inc_mode_name and "NONE" not in inc_mode_name:
+                    try:
+                        inc = prop.increment
+                        text += f"Increment: {_float_text_from_value(inc, notation, precision)}<br/>"
+                    except Exception as ex:
+                        text += (
+                            f"Increment: <span style='color:red'>{str(ex)}</span><br/>"
+                        )
+                elif "VALUESET" in inc_mode_name or "VALUE_SET" in inc_mode_name:
+                    try:
+                        value_set = prop.valid_value_set
+                        vals = ", ".join(
+                            _float_text_from_value(v, notation, precision)
+                            for v in value_set
+                        )
+                        text += f"Valid Value Set: {vals}<br/>"
+                    except Exception as ex:
+                        text += f"Valid Value Set: <span style='color:red'>{str(ex)}</span><br/>"
             except Exception:
-                pass
+                try:
+                    inc = prop.increment
+                    if inc:
+                        text += f"Increment: {_float_text_from_value(inc, notation, precision)}<br/>"
+                except Exception:
+                    pass
 
         return text
 
     def _show_enumeration_info(self, prop: PropEnumeration) -> str:
-        """Show information about an enumeration property"""
+        """Show enumeration property info (matches C++ showEnumerationInfo)"""
         text = "Type: Enumeration<br/>"
 
         try:
@@ -211,7 +300,7 @@ class PropertyInfoBox(QTextEdit):
 
         text += "Possible Values: "
         try:
-            entries = prop.entries
+            entries = list(prop.entries)
             first = True
             any_unavailable = False
 
@@ -225,7 +314,8 @@ class PropertyInfoBox(QTextEdit):
                         text += ", "
                     else:
                         first = False
-                    text += entry.display_name
+                    # C++ uses entry.name(), not displayName()
+                    text += entry.name
                 except Exception:
                     pass
 
@@ -243,7 +333,7 @@ class PropertyInfoBox(QTextEdit):
                             text += ", "
                         else:
                             first = False
-                        text += entry.display_name
+                        text += entry.name
                     except Exception:
                         pass
                 text += "<br/>"
@@ -254,7 +344,7 @@ class PropertyInfoBox(QTextEdit):
         return text
 
     def _show_boolean_info(self, prop: PropBoolean) -> str:
-        """Show information about a boolean property"""
+        """Show boolean property info (matches C++ showBooleanInfo)"""
         text = "Type: Boolean<br/>"
 
         try:

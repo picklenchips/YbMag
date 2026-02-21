@@ -9,6 +9,7 @@ from typing import Optional
 import imagingcontrol4 as ic4
 from .props.prop_control_base import PropSelectedFunction, StreamRestartFilterFunction
 from .props.prop_boolean_control import PropBooleanControl
+from .props.prop_category_control import PropCategoryControl
 from .props.prop_command_control import PropCommandControl
 from .props.prop_enumeration_control import PropEnumerationControl
 from .props.prop_float_control import PropFloatControl
@@ -23,6 +24,7 @@ from imagingcontrol4.properties import (
     PropBoolean,
     PropFloat,
     PropCategory,
+    PropertyType,
 )
 from imagingcontrol4.grabber import Grabber
 
@@ -39,21 +41,27 @@ def create_prop_control(
     try:
         widget = None
 
-        if isinstance(prop, PropInteger):
+        if prop.type == PropertyType.INTEGER:
+            assert isinstance(prop, PropInteger)  # for type check
             widget = PropIntegerControl(prop, parent, grabber)
-        elif isinstance(prop, PropCommand):
+        elif prop.type == PropertyType.COMMAND:
+            assert isinstance(prop, PropCommand)  # for type check
             widget = PropCommandControl(prop, parent, grabber)
-        elif isinstance(prop, PropString):
+        elif prop.type == PropertyType.STRING:
+            assert isinstance(prop, PropString)  # for type check
             widget = PropStringControl(prop, parent, grabber)
-        elif isinstance(prop, PropEnumeration):
+        elif prop.type == PropertyType.ENUMERATION:
+            assert isinstance(prop, PropEnumeration)  # for type check
             widget = PropEnumerationControl(prop, parent, grabber)
-        elif isinstance(prop, PropBoolean):
+        elif prop.type == PropertyType.BOOLEAN:
+            assert isinstance(prop, PropBoolean)  # for type check
             widget = PropBooleanControl(prop, parent, grabber)
-        elif isinstance(prop, PropFloat):
+        elif prop.type == PropertyType.FLOAT:
+            assert isinstance(prop, PropFloat)  # for type check
             widget = PropFloatControl(prop, parent, grabber)
-        elif isinstance(prop, PropCategory):
-            # Categories are handled differently in the tree
-            return None
+        elif prop.type == PropertyType.CATEGORY:
+            assert isinstance(prop, PropCategory)  # for type check
+            widget = PropCategoryControl(prop, parent)
         else:
             return None
 
@@ -66,6 +74,5 @@ def create_prop_control(
 
         return widget
 
-    except Exception as e:
-        print(f"Error creating property control: {e}")
+    except Exception:
         return None

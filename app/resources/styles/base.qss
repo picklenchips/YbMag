@@ -1,0 +1,179 @@
+/* Base theme styles. Colors are substituted by StyleManager. */
+
+QWidget {
+    background-color: {{BG_MAIN}};
+    color: {{TEXT}};
+    font-family: "Segoe UI";
+    font-size: 12px;
+}
+
+QMainWindow, QDialog {
+    background-color: {{BG_MAIN}};
+}
+
+QToolBar {
+    background: {{BG_SURFACE}};
+    border: 1px solid {{BORDER}};
+    border-radius: 8px;
+    padding: 4px;
+}
+
+QStatusBar {
+    background: {{BG_SURFACE}};
+    border-top: 1px solid {{BORDER}};
+}
+
+QLabel {
+    color: {{TEXT}};
+}
+
+QLineEdit, QTextEdit, QPlainTextEdit {
+    background: {{BG_SURFACE}};
+    border: 1px solid {{BORDER_STRONG}};
+    border-radius: 6px;
+    padding: 6px 8px;
+    selection-background-color: {{SELECTION_BG}};
+    selection-color: {{SELECTION_TEXT}};
+}
+
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
+    border: 1px solid {{ACCENT}};
+    background: {{BG_SURFACE}};
+}
+
+QComboBox {
+    background: {{BG_SURFACE}};
+    border: 1px solid {{BORDER_STRONG}};
+    border-radius: 6px;
+    padding: 4px 8px;
+}
+
+QComboBox:hover {
+    border: 1px solid {{ACCENT}};
+}
+
+QComboBox QAbstractItemView {
+    background: {{BG_SURFACE}};
+    border: 1px solid {{BORDER_STRONG}};
+    selection-background-color: {{SELECTION_BG}};
+    selection-color: {{SELECTION_TEXT}};
+}
+
+QPushButton {
+    background: {{BG_SURFACE}};
+    border: 1px solid {{BORDER_STRONG}};
+    border-radius: 8px;
+    padding: 6px 12px;
+}
+
+QPushButton:hover {
+    background: {{ACCENT_SOFT}};
+    border: 1px solid {{ACCENT}};
+}
+
+QPushButton:pressed {
+    background: {{SELECTION_BG}};
+}
+
+QPushButton:checked {
+    background: {{SELECTION_BG}};
+    border: 1px solid {{ACCENT}};
+}
+
+QTreeView {
+    background: {{BG_SURFACE}};
+    border: 1px solid {{BORDER}};
+    border-radius: 8px;
+}
+
+QTreeView::item {
+    padding: 4px;
+    margin: 2px 0px;
+}
+
+QTreeView::item:selected {
+    background: {{SELECTION_BG}};
+    color: {{SELECTION_TEXT}};
+}
+
+QHeaderView::section {
+    background: {{BG_ALT}};
+    border: 1px solid {{BORDER}};
+    padding: 4px 6px;
+}
+
+QGroupBox {
+    border: 1px solid {{BORDER}};
+    border-radius: 8px;
+    margin-top: 8px;
+    padding: 8px;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 8px;
+    padding: 0 4px;
+    color: {{TEXT}};
+}
+
+QTabWidget::pane {
+    border: 1px solid {{BORDER}};
+    border-radius: 8px;
+    padding: 4px;
+    background: {{BG_SURFACE}};
+}
+
+QTabBar::tab {
+    background: {{BG_ALT}};
+    border: 1px solid {{BORDER}};
+    border-bottom: none;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    padding: 6px 12px;
+    margin-right: 4px;
+}
+
+QTabBar::tab:selected {
+    background: {{BG_SURFACE}};
+    border: 1px solid {{BORDER}};
+}
+
+QScrollArea {
+    border: none;
+}
+
+QSplitter::handle {
+    background: {{BORDER}};
+}
+
+QTextEdit#propertyInfoBox {
+    background: {{BG_SURFACE}};
+    border: 1px solid {{BORDER}};
+    border-radius: 8px;
+    font-size: 13px;
+}
+
+QTreeView#propertyTreeView {
+    background: {{BG_SURFACE}};
+}
+
+QLineEdit#propertyFilterInput {
+    background: {{BG_SURFACE}};
+}
+
+QPushButton#cameraLabel {
+    background: transparent;
+    border: none;
+    padding: 2px 8px;
+    text-align: left;
+}
+
+QPushButton#cameraLabel:hover {
+    background: {{ACCENT_SOFT}};
+    border-radius: 6px;
+}
+
+QPushButton#cameraLabel:checked {
+    background: {{SELECTION_BG}};
+    border-radius: 6px;
+}

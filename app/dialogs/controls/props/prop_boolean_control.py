@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import QCheckBox, QMessageBox, QWidget
 from typing import Optional
 
 from imagingcontrol4.grabber import Grabber
-from imagingcontrol4.properties import PropBoolean, Property
+from imagingcontrol4.properties import PropBoolean
 from .prop_control_base import PropControlBase
 
 
@@ -39,7 +39,7 @@ class PropBooleanControl(PropControlBase):
             self.prop.value = value
 
         if not self.prop_set_value(new_value, set_func):
-            QMessageBox.critical(self, "Error", "Failed to set property value")
+            QMessageBox.critical(self, "", "Failed to set property value")
             self.update_all()
 
     def update_all(self):

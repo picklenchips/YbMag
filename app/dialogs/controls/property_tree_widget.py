@@ -3,7 +3,7 @@ Property tree widget
 Translated from C++ PropertyTreeWidget.h/cpp
 """
 
-from PyQt6.QtCore import Qt, QRect, QItemSelectionModel
+from PyQt6.QtCore import Qt, QRect, QModelIndex, QItemSelection
 from PyQt6.QtWidgets import (
     QWidget,
     QTreeView,
@@ -11,11 +11,13 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QComboBox,
     QLineEdit,
-    QLabel,
+    QFrame,
     QStyledItemDelegate,
     QSplitter,
+    QAbstractItemView,
+    QHeaderView,
 )
-from PyQt6.QtGui import QPainter, QMouseEvent, QShortcut, QKeySequence
+from PyQt6.QtGui import QPainter, QMouseEvent, QShortcut, QKeySequence, QPalette
 from imagingcontrol4.properties import PropertyVisibility, PropCategory
 from imagingcontrol4.grabber import Grabber
 from typing import Optional, Callable
@@ -31,8 +33,28 @@ from .props.prop_control_base import StreamRestartFilterFunction, PropSelectedFu
 from .property_info_box import PropertyInfoBox
 
 
+# Style matching C++ CustomStyle.PropertyTreeViewStyle
+PROPERTY_TREE_VIEW_STYLE = (
+    "QTreeView::branch, QTreeView::item, QTreeView { "
+    "outline: none; "
+    "show-decoration-selected: 0;"
+    "color: palette(text);"
+    "background: palette(window);"
+    "font-size: 13px;"
+    "}"
+    "QTreeView::branch:open:adjoins-item:has-children{"
+    "background: transparent;"
+    "margin : 0;"
+    " }"
+    "QTreeView::branch:closed:adjoins-item:has-children{"
+    "background: transparent;"
+    "margin : 0;"
+    " }"
+)
+
+
 class PropertyTreeItemDelegate(QStyledItemDelegate):
-    """Delegate for creating editors in the tree"""
+    """Delegate for creating editors in the tree (column 1)"""
 
     def __init__(
         self,
@@ -51,22 +73,6 @@ class PropertyTreeItemDelegate(QStyledItemDelegate):
         """Update grabber reference"""
         self.grabber_ = grabber
 
-    def sizeHint(self, option, index):
-        """Return size hint for items - ensures rows are tall enough for widgets"""
-        from PyQt6.QtCore import QSize
-
-        # Get the default size hint from the base class
-        size = super().sizeHint(option, index)
-
-        # Ensure minimum height for all rows to accommodate widgets
-        # QComboBox and other controls typically need at least 28-32 pixels
-        min_height = 32
-
-        if size.height() < min_height:
-            size.setHeight(min_height)
-
-        return size
-
     def createEditor(self, parent: QWidget, option, index) -> Optional[QWidget]:
         """Create editor widget for property"""
         source_index = self.proxy_.mapToSource(index)
@@ -80,9 +86,35 @@ class PropertyTreeItemDelegate(QStyledItemDelegate):
         )
 
         if widget:
-            widget.setContentsMargins(4, 2, 8, 2)  # Add padding around value controls
+            widget.setContentsMargins(0, 0, 8, 0)
 
         return widget
+
+
+class TestItemDelegateForPaint(QStyledItemDelegate):
+    """Delegate for painting category names in column 0
+    Matches C++ TestItemDelegateForPaint"""
+
+    def __init__(self, proxy: FilterPropertiesProxy, parent: QWidget):
+        super().__init__(parent)
+        self.proxy_ = proxy
+        self.parent_ = parent
+
+    def paint(self, painter: QPainter, option, index):
+        """Custom painting for categories"""
+        source_index = self.proxy_.mapToSource(index)
+        tree = source_index.internalPointer()
+
+        if tree and len(tree.children) > 0:
+            # Paint category row with category background/text
+            painter.save()
+            painter.setPen(self.parent_.palette().color(QPalette.ColorRole.Text))
+            r = option.rect
+            painter.fillRect(r, self.parent_.palette().mid())
+            painter.drawText(r, option.displayAlignment, index.data())
+            painter.restore()
+        else:
+            super().paint(painter, option, index)
 
 
 class PropertyTreeView(QTreeView):
@@ -135,33 +167,6 @@ class PropertyTreeView(QTreeView):
             super().drawBranches(painter, rect, index)
 
 
-class BranchPaintDelegate(QStyledItemDelegate):
-    """Delegate for painting category branches"""
-
-    def __init__(self, proxy: FilterPropertiesProxy, parent: QWidget):
-        super().__init__()
-        self.proxy_ = proxy
-        self.parent_ = parent
-
-    def paint(self, painter: QPainter, option, index):
-        """Custom painting for categories"""
-        source_index = self.proxy_.mapToSource(index)
-        tree = source_index.internalPointer()
-
-        if tree and len(tree.children) > 0:
-            # Paint category row
-            painter.save()
-            painter.setPen(self.parent_.palette().text().color())
-
-            rect = option.rect
-            painter.fillRect(rect, self.parent_.palette().mid())
-            painter.drawText(rect, option.displayAlignment, index.data())
-
-            painter.restore()
-        else:
-            super().paint(painter, option, index)
-
-
 @dataclass
 class PropertyTreeWidgetSettings:
     """Settings for property tree widget"""
@@ -170,12 +175,13 @@ class PropertyTreeWidgetSettings:
     show_info_box: bool = True
     show_filter: bool = True
     initial_filter: str = ""
-    initial_visibility: PropertyVisibility = PropertyVisibility.GURU
+    initial_visibility: PropertyVisibility = PropertyVisibility.BEGINNER
     stream_restart_filter: Optional[StreamRestartFilterFunction] = None
 
 
 class PropertyTreeWidget(QWidget):
-    """Main property tree widget"""
+    """Main property tree widget
+    Matches C++ PropertyTreeWidgetBase<QWidget>"""
 
     def __init__(
         self,
@@ -190,78 +196,56 @@ class PropertyTreeWidget(QWidget):
             settings = PropertyTreeWidgetSettings()
 
         self.settings_ = settings
-        self.grabber_ = grabber
 
-        # Create model and proxy
-        try:
-            self.source_ = PropertyTreeModel(cat, self)
-        except Exception as e:
-            print(f"[PropertyTreeWidget] Error creating PropertyTreeModel: {e}")
-            import traceback
+        # Create model
+        self.source_ = PropertyTreeModel(cat, self)
 
-            traceback.print_exc()
-
+        # Create proxy
         self.proxy_ = FilterPropertiesProxy(self)
-        self.proxy_.setSourceModel(self.source_)
 
-        # Create info box and wire up property selection callback
-        self.info_box_ = None
-        prop_selected_func = None
+        # Create info box early (needed for prop_selected callback in delegate)
+        self.info_text_ = None
         if settings.show_info_box:
-            self.info_box_ = PropertyInfoBox(self)
-            prop_selected_func = lambda prop: (
-                self.info_box_.update(prop) if self.info_box_ else None
-            )
+            self.info_text_ = PropertyInfoBox(self)
 
         # Create delegates
+        prop_selected_func = (
+            (lambda prop: self.info_text_.update(prop)) if self.info_text_ else None
+        )
         self.delegate_ = PropertyTreeItemDelegate(
             self.proxy_, grabber, settings.stream_restart_filter, prop_selected_func
         )
-        self.branch_paint_delegate_ = BranchPaintDelegate(self.proxy_, self)
+        self.branch_paint_delegate_ = TestItemDelegateForPaint(self.proxy_, self)
 
-        # Create tree view
-        self.view_ = PropertyTreeView(self.proxy_)
-        self.view_.setModel(self.proxy_)
-        self.view_.setItemDelegateForColumn(0, self.branch_paint_delegate_)
-        self.view_.setItemDelegateForColumn(1, self.delegate_)
-        self.view_.setUniformRowHeights(False)
-        self.view_.setAlternatingRowColors(False)
+        # Build UI inside a QFrame (matches C++ pattern)
+        frame = QFrame(self)
+        layout = QVBoxLayout(frame)
 
-        # Configure header for better spacing
-        if header := self.view_.header():
-            header.setStretchLastSection(True)
-            header.setSectionResizeMode(0, header.ResizeMode.ResizeToContents)
-
-        self.view_.setHeaderHidden(True)  # Hide the column header row
-        self.view_.setIndentation(20)  # Set indentation for tree structure
-
-        # Add spacing between items
-        self.view_.setStyleSheet(
-            """
-            QTreeView::item {
-                padding: 4px;
-                margin: 2px 0px;
-            }
-        """
-        )
-
-        # Create filter controls
-        main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(8)
+        # Visibility combo and filter
+        self.visibility_combo_ = None
+        self.filter_text_ = None
 
         if settings.show_filter:
-            filter_layout = QHBoxLayout()
-            filter_layout.setSpacing(8)
+            top = QHBoxLayout()
 
-            # Search box (full width)
+            self.visibility_combo_ = QComboBox()
+            self.visibility_combo_.addItem("Beginner", int(PropertyVisibility.BEGINNER))
+            self.visibility_combo_.addItem("Expert", int(PropertyVisibility.EXPERT))
+            self.visibility_combo_.addItem("Guru", int(PropertyVisibility.GURU))
+            self.visibility_combo_.setCurrentIndex(int(settings.initial_visibility))
+            self.visibility_combo_.setMinimumWidth(200)
+            self.visibility_combo_.setStyleSheet("QComboBox { font-size: 13px; }")
+            self.visibility_combo_.currentIndexChanged.connect(
+                lambda _: self._update_visibility()
+            )
+            top.addWidget(self.visibility_combo_)
+
             self.filter_text_ = QLineEdit()
-            self.filter_text_.setPlaceholderText("Search Properties (Ctrl+F)")
+            self.filter_text_.setStyleSheet("QLineEdit { font-size: 13px; }")
             self.filter_text_.setText(settings.initial_filter)
+            self.filter_text_.setPlaceholderText("Search Properties (Ctrl-F)")
             self.filter_text_.setClearButtonEnabled(True)
-            self.filter_text_.textChanged.connect(self._update_visibility)
-            filter_layout.addWidget(self.filter_text_)
 
-            # Add Ctrl+F shortcut to focus search box
             search_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
             search_shortcut.activated.connect(
                 lambda: (
@@ -271,151 +255,180 @@ class PropertyTreeWidget(QWidget):
                 )
             )
 
-            main_layout.addLayout(filter_layout)
-        else:
-            self.filter_text_ = None
+            self.filter_text_.textChanged.connect(lambda _: self._update_visibility())
+            top.addWidget(self.filter_text_)
 
-        self.visibility_combo_ = None  # No longer used
+            layout.addLayout(top)
+            self._update_visibility()
 
-        # Add tree view and info box with splitter if show_info_box is enabled
-        if settings.show_info_box and self.info_box_:
+        # Create tree view
+        self.view_ = PropertyTreeView(self.proxy_)
+        self.view_.setStyleSheet(PROPERTY_TREE_VIEW_STYLE)
+        self.proxy_.setSourceModel(self.source_)
+        self.proxy_.filter(settings.initial_filter, settings.initial_visibility)
+
+        self.view_.setModel(self.proxy_)
+        self.view_.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        if header := self.view_.header():
+            header.setHidden(True)
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            header.setStretchLastSection(True)
+        self.view_.setItemDelegateForColumn(0, self.branch_paint_delegate_)
+        self.view_.setItemDelegateForColumn(1, self.delegate_)
+
+        # Connect signals
+        self.view_.clicked.connect(self._prop_selected)
+        if sel_model := self.view_.selectionModel():
+            sel_model.selectionChanged.connect(self._prop_selection_changed)
+        self.proxy_.dataChanged.connect(self._proxy_data_changed)
+        self.proxy_.layoutChanged.connect(self._proxy_layout_changed)
+
+        # Layout: splitter or just tree
+        if settings.show_info_box and self.info_text_:
             splitter = QSplitter(Qt.Orientation.Vertical, self)
+            layout.addWidget(splitter)
             splitter.addWidget(self.view_)
-            splitter.addWidget(self.info_box_)
-            splitter.setStretchFactor(0, 3)  # Tree view takes more space
-            splitter.setStretchFactor(1, 1)  # Info box takes less space
-            main_layout.addWidget(splitter)
+            splitter.addWidget(self.info_text_)
+            splitter.setStretchFactor(0, 3)
         else:
-            main_layout.addWidget(self.view_)
+            layout.addWidget(self.view_)
 
-        self.setLayout(main_layout)
+        layout.setSpacing(0)
+        layout.setContentsMargins(0, 0, 0, 0)
+        frame.setLayout(layout)
 
-        # Connect tree view selection to update info box
-        if self.info_box_:
-            if selectionmodel := self.view_.selectionModel():
-                selectionmodel.selectionChanged.connect(self._on_selection_changed)
+        # For QWidget base, set frame's layout as our layout
+        self.setLayout(layout)
 
-        # Set root index but don't expand categories by default
-        if not settings.show_root_item:
-            root_index = self.proxy_.mapFromSource(self.source_.rootIndex())
-            self.view_.setRootIndex(root_index)
+        # Initial view setup
+        self._update_view()
 
-        # Create all editors
-        self._create_all_editors(self.proxy_, self.view_.rootIndex())
-
-        # Apply initial filter
-        self._update_visibility()
-
-    def closeEvent(self, event):
-        """Clean up when widget is closed"""
-        # Close all persistent editors to trigger cleanup
-        self._close_all_editors(self.proxy_, self.view_.rootIndex())
-        super().closeEvent(event)
-
-    def _close_all_editors(self, model, parent):
-        """Recursively close all persistent editors"""
-        rows = model.rowCount(parent)
-
-        for row in range(rows):
-            index1 = model.index(row, 1, parent)
-            if index1.isValid():
-                self.view_.closePersistentEditor(index1)
-
-            index0 = model.index(row, 0, parent)
-            if index0.isValid():
-                self._close_all_editors(model, index0)
-
-    def _create_all_editors(self, model, parent):
-        """Recursively create persistent editors for all items"""
-        rows = model.rowCount(parent)
-
-        for row in range(rows):
-            index0 = model.index(row, 0, parent)
-            index1 = model.index(row, 1, parent)
-
-            if index0.isValid():
-                # Check if this is a category (has children)
-                source_index = self.proxy_.mapToSource(index0)
-                tree = source_index.internalPointer()
-
-                if tree and len(tree.children) > 0:
-                    # This is a category - span it across both columns
-                    self.view_.setFirstColumnSpanned(row, parent, True)
-                elif index1.isValid():
-                    # This is a property - create editor in column 1
-                    self.view_.openPersistentEditor(index1)
-
-                # Recurse into children
-                self._create_all_editors(model, index0)
+    # -- Private helpers matching C++ --
 
     def _update_visibility(self):
-        """Update filter based on current settings"""
-        if self.filter_text_:
-            # Always use GURU visibility to show all properties
+        """Read visibility combo and filter text, then update proxy"""
+        if self.visibility_combo_:
+            vis = PropertyVisibility(self.visibility_combo_.currentData())
+        else:
             vis = PropertyVisibility.GURU
-            text = self.filter_text_.text()
-            self.proxy_.filter(text, vis)
+        text = self.filter_text_.text() if self.filter_text_ else ""
+        self.proxy_.filter(text, vis)
 
-            # Re-establish root index after filtering to ensure root stays hidden
-            if not self.settings_.show_root_item:
-                root_index = self.proxy_.mapFromSource(self.source_.rootIndex())
-                self.view_.setRootIndex(root_index)
+    def _create_all_editors(self, model, parent: QModelIndex):
+        """Recursively open persistent editors on column 1 for all rows"""
+        rows = model.rowCount(parent)
+        for row in range(rows):
+            index1 = model.index(row, 1, parent)
+            self.view_.openPersistentEditor(index1)
 
-    def _on_selection_changed(self, selected, deselected):
-        """Handle tree view selection changes to update info box"""
-        if not self.info_box_:
+            index0 = model.index(row, 0, parent)
+            self._create_all_editors(model, index0)
+
+    def _prop_selection_changed(
+        self, selected: QItemSelection, deselected: QItemSelection
+    ):
+        """Handle selection change for info box"""
+        if not selected.isEmpty() and len(selected) > 0 and not selected[0].isEmpty():
+            item = selected[0].indexes()[0]
+            self._prop_selected(item)
+        else:
+            self._prop_selected(QModelIndex())
+
+    def _prop_selected(self, index: QModelIndex):
+        """Update info box from selected index"""
+        if not self.info_text_:
             return
 
-        if selectionmodel := self.view_.selectionModel():
-            indexes = selectionmodel.selectedIndexes()
-        if indexes:
-            # Get the first selected index
-            index = indexes[0]
-            source_index = self.proxy_.mapToSource(index)
-            tree = source_index.internalPointer()
-            if tree:
-                self.info_box_.update(tree.prop)
-            else:
-                self.info_box_.clear()
-        else:
-            self.info_box_.clear()
+        source_index = self.proxy_.mapToSource(index)
+        tree = source_index.internalPointer()
+        if not tree:
+            self.info_text_.clear()
+            return
 
-    def update_grabber(self, grabber: Optional[Grabber]):
-        """Update grabber reference"""
-        self.grabber_ = grabber
-        self.delegate_.update_grabber(grabber)
+        self.info_text_.update(tree.prop)
 
-    def update_model(self, cat: PropCategory):
-        """Update with new property category"""
-        # Close all editors first to ensure proper cleanup
-        self._close_all_editors(self.proxy_, self.view_.rootIndex())
-
-        # Remove model
-        self.view_.setModel(None)
-
-        # Create new model
-        self.source_ = PropertyTreeModel(cat, self)
-        self.proxy_.setSourceModel(self.source_)
-        self.view_.setModel(self.proxy_)
-
-        # Recreate editors
-        if not self.settings_.show_root_item:
-            root_index = self.proxy_.mapFromSource(self.source_.rootIndex())
-            self.view_.setRootIndex(root_index)
+    def _update_view(self):
+        """Refresh the tree: set root, create editors, expand, configure header"""
+        if not self.settings_.show_root_item and self.source_:
+            self.view_.setRootIndex(self.proxy_.mapFromSource(self.source_.rootIndex()))
 
         self._create_all_editors(self.proxy_, self.view_.rootIndex())
-        self._update_visibility()
+        self.view_.expandAll()
+
+        source_available = self.source_ is not None
+
+        if self.info_text_:
+            self.info_text_.setEnabled(source_available)
+        if self.visibility_combo_:
+            self.visibility_combo_.setEnabled(source_available)
+        if self.filter_text_:
+            self.filter_text_.setEnabled(source_available)
+        self.view_.setEnabled(source_available)
+
+        if source_available:
+            if header := self.view_.header():
+                header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+                header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+                header.setStretchLastSection(True)
+            self.view_.setItemDelegateForColumn(0, self.branch_paint_delegate_)
+            self.view_.setItemDelegateForColumn(1, self.delegate_)
+            self.view_.resizeColumnToContents(0)
+
+    def _proxy_data_changed(self, *args):
+        self._update_view()
+
+    def _proxy_layout_changed(self, *args):
+        self._update_view()
+
+    # -- Public API matching C++ --
+
+    def clear_model(self):
+        """Clear the model (set to None)"""
+        self._update_model_internal(None)
+
+    def update_model(self, cat: PropCategory):
+        """Update with a new property category"""
+        self._update_model_internal(PropertyTreeModel(cat, self))
+
+    def _update_model_internal(self, model: Optional[PropertyTreeModel]):
+        """Replace the source model"""
+        old_model = self.source_
+        self.source_ = model
+        self.proxy_.setSourceModel(self.source_)
+        self._update_view()
+        # old_model will be GC'd in Python
+
+    def update_grabber(self, grabber: Optional[Grabber]):
+        """Update with a new grabber - matches C++ updateGrabber"""
+        if not grabber:
+            self.clear_model()
+            return
+        try:
+            prop_map = grabber.device_property_map
+            cat = prop_map.find_category("Root")
+            self.delegate_.update_grabber(grabber)
+            self._update_model_internal(PropertyTreeModel(cat, self))
+        except Exception:
+            pass
+
+    def set_property_filter(self, accept_prop: Callable):
+        """Set a custom filter function"""
+        self.proxy_.filter_func(accept_prop)
 
     def set_prop_visibility(self, visibility: PropertyVisibility):
         """Set visibility filter"""
         if self.visibility_combo_:
-            # Find and set the matching item
-            for i in range(self.visibility_combo_.count()):
-                if self.visibility_combo_.itemData(i) == visibility:
-                    self.visibility_combo_.setCurrentIndex(i)
-                    break
+            self.visibility_combo_.setCurrentIndex(int(visibility))
+            self._update_visibility()
 
     def set_filter_text(self, filter_text: str):
         """Set filter text"""
         if self.filter_text_:
             self.filter_text_.setText(filter_text)
+            self._update_visibility()
+
+    def closeEvent(self, event):
+        """Clean up when widget is closed"""
+        self.clear_model()
+        super().closeEvent(event)

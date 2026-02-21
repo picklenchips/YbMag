@@ -194,60 +194,43 @@ class PropControlBase(QWidget):
             return False
 
     def _schedule_update(self):
-        """Schedule a UI update"""
-        # Check if widget is being destroyed
+        """Schedule a UI update (matches C++ notification callback)"""
         if self._is_destroyed:
             return
 
         try:
-            # Remove any pending update events
-            self.final_update.stop()
-            event = QEvent(PropControlBase.UPDATE_ALL)
             from PyQt6.QtWidgets import QApplication
 
-            QApplication.postEvent(self, event)
+            QApplication.removePostedEvents(self, PropControlBase.UPDATE_ALL)
+            QApplication.postEvent(self, QEvent(PropControlBase.UPDATE_ALL))
         except RuntimeError:
-            # Widget has been deleted, mark as destroyed
             self._is_destroyed = True
 
     def _on_final_update_timeout(self):
-        """Timer callback for delayed update"""
-        # Check if widget is being destroyed
+        """Timer callback for delayed update (matches C++ final_update_ callback)"""
         if self._is_destroyed:
             return
 
         try:
-            event = QEvent(PropControlBase.UPDATE_ALL)
             from PyQt6.QtWidgets import QApplication
 
-            QApplication.postEvent(self, event)
+            QApplication.removePostedEvents(self, PropControlBase.UPDATE_ALL)
+            QApplication.postEvent(self, QEvent(PropControlBase.UPDATE_ALL))
         except RuntimeError:
-            # Widget has been deleted
             self._is_destroyed = True
 
     def customEvent(self, event: QEvent):
-        """Handle custom events"""
+        """Handle custom events (matches C++ customEvent)"""
         if event.type() == PropControlBase.UPDATE_ALL:
-            # Don't update if widget is destroyed
             if self._is_destroyed:
-                return
-
-            # Check if device is still valid
-            if self.grabber and not self.grabber.is_device_valid:
                 return
 
             current_time = QTime.currentTime()
             if current_time > self.prev_update.addMSecs(66):
                 try:
                     self.update_all()
-                except Exception as e:
-                    # Silently ignore errors from closed devices
-                    error_str = str(e)
-                    if (
-                        "Device has been closed" not in error_str
-                        and "DeviceInvalid" not in error_str
-                    ):
-                        print(f"Error in {self.__class__.__name__}.update_all: {e}")
+                except Exception:
+                    pass
                 self.prev_update = current_time
                 self.final_update.stop()
             else:

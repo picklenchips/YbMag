@@ -19,8 +19,6 @@ class PropCommandControl(PropControlBase):
     def __init__(
         self, prop: PropCommand, parent: Optional[QWidget], grabber: Optional[Grabber]
     ):
-        if not isinstance(prop, PropCommand):
-            raise TypeError("prop must be an instance of PropCommand")
         super().__init__(prop, parent, grabber)
 
         text = self.prop.display_name
@@ -34,18 +32,19 @@ class PropCommandControl(PropControlBase):
             layout.addWidget(self.button)
 
     def _on_execute(self):
-        """Execute the command"""
+        """Execute the command (matches C++ execute)"""
 
         def execute_func():
             self.prop.execute()
 
-        try:
-            if not self.prop_execute(execute_func):
-                QMessageBox.critical(self, "Error", "Failed to execute command")
-            elif not self.prop.is_done:
-                self.button.setEnabled(False)
-        except Exception as e:
-            QMessageBox.critical(self, "Error", str(e))
+        if not self.prop_execute(execute_func):
+            QMessageBox.critical(self, "", "Failed to execute command")
+        else:
+            try:
+                if not self.prop.is_done:
+                    self.button.setEnabled(False)
+            except Exception:
+                pass
 
     def update_all(self):
         """Update button state"""
