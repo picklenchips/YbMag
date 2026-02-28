@@ -66,6 +66,22 @@ class SettingsDialog(QDialog):
         theme_group.setLayout(theme_layout)
         main_layout.addWidget(theme_group)
 
+        # Property dialog layout group
+        layout_group = QGroupBox("Property Dialog", self)
+        layout_layout = QVBoxLayout()
+
+        self.tabbed_checkbox = QCheckBox("Use tabbed layout", self)
+        self.tabbed_checkbox.setToolTip(
+            "Organize properties into category tabs with a global search bar.\n"
+            "Takes effect the next time you open the property dialog."
+        )
+        self.tabbed_checkbox.setChecked(self.resource_selector.get_tabbed_properties())
+        self.tabbed_checkbox.toggled.connect(self._on_tabbed_changed)
+        layout_layout.addWidget(self.tabbed_checkbox)
+
+        layout_group.setLayout(layout_layout)
+        main_layout.addWidget(layout_group)
+
         # Add some spacing
         main_layout.addStretch()
 
@@ -87,3 +103,7 @@ class SettingsDialog(QDialog):
         # Call the callback if provided
         if self.on_theme_changed:
             self.on_theme_changed(theme)
+
+    def _on_tabbed_changed(self, checked: bool):
+        """Handle tabbed-layout toggle"""
+        self.resource_selector.set_tabbed_properties(checked)

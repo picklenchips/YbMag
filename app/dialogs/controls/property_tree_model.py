@@ -34,7 +34,7 @@ class PropertyTreeNode:
         display_name: str,
     ):
         self.parent_ = parent
-        self.prop_ = prop
+        self.prop_: Optional[Property] = prop
         self.prop_type_ = prop_type
         self.row_ = row
         self.prop_name_ = prop_name
@@ -55,7 +55,8 @@ class PropertyTreeNode:
         if self.children_:
             return
 
-        if isinstance(self.prop_, PropCategory):
+        if self.prop_.type == PropertyType.CATEGORY:
+            assert isinstance(self.prop_, PropCategory)
             try:
                 index = 0
                 # self.prop_ is already a PropCategory, don't call as_category()
@@ -109,6 +110,8 @@ class PropertyTreeNode:
         if self.notification_token_:
             return
 
+        if self.prop_ is None:
+            return
         try:
             self.prev_available_ = self.prop_.is_available
 
@@ -163,7 +166,9 @@ class PropertyTreeModel(QAbstractItemModel):
         super().__init__(parent)
 
         # Create tree root (dummy parent for actual root)
-        self.tree_root_ = PropertyTreeNode(None, root, PropertyType.CATEGORY, 0, "", "")
+        self.tree_root_: Optional[PropertyTreeNode] = PropertyTreeNode(
+            None, root, PropertyType.CATEGORY, 0, "", ""
+        )
 
         # Add actual root as child
         try:
@@ -182,13 +187,47 @@ class PropertyTreeModel(QAbstractItemModel):
         except Exception as e:
             self.prop_root_ = None
 
+    def clear(self):
+        """Explicitly release all property references and break reference cycles.
+
+        Must be called before the IC4 Library context is torn down so that
+        PropertyMap / Property pointers are freed while the library is still
+        alive.  Without this, parent<->children cycles in PropertyTreeNode
+        prevent ref-count collection and __del__ fires too late.
+        """
+        self.beginResetModel()
+        self._clear_node(self.tree_root_)
+        self.tree_root_ = None
+        self.prop_root_ = None
+        self.endResetModel()
+
+    @staticmethod
+    def _clear_node(node: Optional["PropertyTreeNode"]):
+        """Recursively unregister notifications and drop property references."""
+        if node is None:
+            return
+        # Unregister property notification
+        if node.notification_token_ is not None:
+            try:
+                node.prop.event_remove_notification(node.notification_token_)
+            except Exception:
+                pass
+            node.notification_token_ = None
+        # Recurse into children
+        for child in node.children_:
+            PropertyTreeModel._clear_node(child)
+        # Break reference cycle and release Property / PropCategory handles
+        node.children_.clear()
+        node.parent_ = None
+        node.prop_ = None
+
     def rootIndex(self) -> QModelIndex:
         """Get index of root item"""
         if self.prop_root_:
             return self.createIndex(0, 0, self.prop_root_)
         return QModelIndex()
 
-    def _parent_item(self, parent: QModelIndex) -> PropertyTreeNode:
+    def _parent_item(self, parent: QModelIndex) -> Optional[PropertyTreeNode]:
         """Get parent item from index"""
         if not parent.isValid():
             return self.tree_root_

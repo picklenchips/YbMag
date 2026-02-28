@@ -1,43 +1,65 @@
-from PyQt6.QtWidgets import (
-    QApplication,
-    QWidget,
-    QMainWindow,
-    QHBoxLayout,
-    QVBoxLayout,
-    QPushButton,
-    QMessageBox,
-    QRadioButton,
-    QDialog,
-)
-from PyQt6.QtCore import QStandardPaths, QDir, QFileInfo, QEvent, Qt
+"""
+HDR Image Capture Dialog — Qt6 front-end for Still Image HDR acquisition.
+
+Provides frame capture with multiple exposure times and HDR merging using OpenCV.
+Works with the main camera stream from MainWindow without interfering with livestream.
+"""
+
+from __future__ import annotations
+
 import time
 import threading
 import cv2
 import numpy as np
 from typing import Any
-from imagingcontrol4.queuesink import QueueSinkListener, QueueSink
+
+from PyQt6.QtWidgets import (
+    QDialog,
+    QWidget,
+    QHBoxLayout,
+    QVBoxLayout,
+    QPushButton,
+    QRadioButton,
+    QMessageBox,
+    QLabel,
+)
+from PyQt6.QtCore import Qt, pyqtSignal, QObject
+
 from imagingcontrol4.grabber import Grabber
+from imagingcontrol4.queuesink import QueueSinkListener, QueueSink
+from imagingcontrol4.imagebuffer import ImageBuffer
+from imagingcontrol4.imagetype import ImageType, PixelFormat
+from imagingcontrol4.display import DisplayRenderPosition
+from imagingcontrol4.bufferpool import BufferPool
 from imagingcontrol4.properties import PropertyMap
 from imagingcontrol4.propconstants import PropId
-from imagingcontrol4.imagebuffer import ImageBuffer
-from imagingcontrol4.display import Display, DisplayRenderPosition
-from imagingcontrol4.bufferpool import BufferPool
-from imagingcontrol4.devenum import DeviceEnum
-
-# import ImageType
-from imagingcontrol4.imagetype import ImageType, PixelFormat
-from imagingcontrol4.library import Library
 from imagingcontrol4.ic4exception import IC4Exception
 
-from app.dialogs.display import DisplayWidget
-from dialogs.device_selection_dialog import DeviceSelectionDialog
-from dialogs.property_dialog import PropertyDialog
-from dialogs.controls.basic_slider import BasicSlider
-
-DEVICE_LOST_EVENT = QEvent.Type(QEvent.Type.User + 1)
+from .display import DisplayWidget
+from .controls.basic_slider import BasicSlider
+from resources.style_manager import get_style_manager
 
 
-class Listener(QueueSinkListener):
+# ---------------------------------------------------------------------------
+# Helper: poll results carrier (thread → main)
+# ---------------------------------------------------------------------------
+
+
+class _PollSignals(QObject):
+    """Carrier for cross-thread signals."""
+
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+
+
+# ---------------------------------------------------------------------------
+# Frame Listener
+# ---------------------------------------------------------------------------
+
+
+class HDRListener(QueueSinkListener):
+    """Listens to image queue and captures frames for HDR processing."""
+
     buffer_list: list[ImageBuffer]
 
     def __init__(self):
@@ -74,185 +96,119 @@ class Listener(QueueSinkListener):
 
         if self.capture:
             self.counter = self.counter + 1
-            print(f"image {self.counter}/{self.frames_to_capture}")
+            print(f"HDR: Captured image {self.counter}/{self.frames_to_capture}")
             self.buffer_list.append(buffer)
             # End capture after desired number of frames.
             if self.counter >= self.frames_to_capture:
                 self.capture_end_event.set()
                 self.capture = False
-                print("End Capture")
+                print("HDR: Capture complete")
 
 
-class MainWindow(QMainWindow):
-    # The main window for the simple test application
+# ---------------------------------------------------------------------------
+# HDR Dialog
+# ---------------------------------------------------------------------------
 
-    def __init__(self):
-        QMainWindow.__init__(self)
-        self.setWindowTitle("Still Image HDR")
-        self.create_gui()
 
-        self.check_for_devices()
+class HDRDialog(QDialog):
+    """Dialog for capturing and processing Still Image HDR."""
 
-        # Create a Grabber object to communicate with a video capture device
-        self.grabber = Grabber()
-        self.grabber.event_add_device_lost(
-            lambda g: QApplication.postEvent(self, QEvent(DEVICE_LOST_EVENT))
-        )
+    _hdr_result: np.typing.NDArray[Any]
+
+    def __init__(
+        self, grabber: Grabber, parent: QWidget | None = None, resource_selector=None
+    ):
+        QDialog.__init__(self, parent)
+        self.setWindowTitle("Still Image HDR Capture")
+        self.setGeometry(100, 100, 1400, 600)
+
+        self.grabber = grabber
+        self.resource_selector = resource_selector
 
         # The buffer pool is used to display the resulting HDR image
         self.pool = BufferPool()
 
-        self.listener = Listener()
+        self.listener = HDRListener()
 
         self.queue_sink = QueueSink(self.listener, [PixelFormat.BGR8])
 
-        self.create_state_file_names()
+        self._poll_signals = _PollSignals()
+        self._poll_signals.finished.connect(self._on_capture_finished)
+        self._poll_signals.error.connect(self._on_capture_error)
 
-        # Restore the last used video capture device.
-        if QFileInfo.exists(self.device_file):
-            try:
-                self.grabber.device_open_from_state_file(self.device_file)
-                self.on_start()
-            except IC4Exception as e:
-                QMessageBox.information(
-                    self,
-                    "",
-                    f"Loading last used device failed: {e}",
-                    QMessageBox.StandardButton.Ok,
-                )
-
-        self.update_controls()
-
-    def check_for_devices(self) -> None:
-        """Show a warning, if no interfaces are found by
-        IC Imaging Control 4. This indicates, that no IC4
-        GenTL Producers are installed.
-        """
-        if len(DeviceEnum.interfaces()) == 0:
-            QMessageBox.warning(
-                self,
-                "Still Image HDR",
-                "No interfaces found.\nIs an IC4 GenTL Producer from\n"
-                + "https://www.theimagingsource.com/en-us/support/download/\n"
-                + "installed?",
-                QMessageBox.StandardButton.Ok,
-            )
+        self.create_gui()
+        self.apply_theme()
 
     def create_gui(self):
         """Create the user interface"""
-        main_widget = QWidget()
-        mainlayout = QHBoxLayout()
-        btn_layout = QVBoxLayout()
+        main_layout = QHBoxLayout()
 
-        # Create a widget to use as the target for video display
-        self.video_widget = DisplayWidget()
-        self.display = self.video_widget.as_display()
-        self.display.set_render_position(DisplayRenderPosition.STRETCH_CENTER)
+        # Left side: display area
+        left_layout = QVBoxLayout()
 
+        # Create a widget to display the result
         self.result_widget = DisplayWidget()
         self.result_display = self.result_widget.as_display()
         self.result_display.set_render_position(DisplayRenderPosition.STRETCH_CENTER)
 
-        mainlayout.addWidget(self.video_widget)  # type: ignore
-        mainlayout.addWidget(self.result_widget)  # type: ignore
+        left_layout.addWidget(self.result_widget)
+        main_layout.addLayout(left_layout, 3)
 
-        self.btn_device = QPushButton("Device")
-        self.btn_properties = QPushButton("Properties")
-        self.btn_start = QPushButton("Start")
-        self.btn_snap = QPushButton("Snap Image")
+        # Right side: controls
+        btn_layout = QVBoxLayout()
+
+        # Frame count selection
         self.radio_frames2 = QRadioButton("2 Frames")
         self.radio_frames4 = QRadioButton("4 Frames")
         self.radio_frames4.setChecked(True)
 
-        self.btn_device.setMaximumWidth(100)
-        self.btn_properties.setMaximumWidth(100)
-        self.btn_start.setMaximumWidth(100)
-        self.btn_snap.setMaximumWidth(100)
-
-        self.radio_frames2.setMaximumWidth(100)
-        self.radio_frames4.setMaximumWidth(100)
-
-        self.btn_device.clicked.connect(self.on_select_device)
-        self.btn_properties.clicked.connect(self.on_device_properties)
-        self.btn_start.clicked.connect(self.on_start)
-        self.btn_snap.clicked.connect(self.on_snap)
-
         self.radio_frames2.clicked.connect(self.on_frames_clicked)
         self.radio_frames4.clicked.connect(self.on_frames_clicked)
 
-        btn_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        btn_layout.addWidget(self.btn_device)
-        btn_layout.addWidget(self.btn_properties)
-        btn_layout.addWidget(self.btn_start)
-        btn_layout.addWidget(self.btn_snap)
+        btn_layout.addWidget(QLabel("Frame Count:"))
         btn_layout.addWidget(self.radio_frames2)
         btn_layout.addWidget(self.radio_frames4)
+        btn_layout.addSpacing(15)
 
-        # create the sliders for the exposure time factors:
+        # Exposure time multiplier sliders
+        btn_layout.addWidget(QLabel("Exposure Factors:"))
+
         self.factors = []
         self.factors.append(BasicSlider(0.01, 32.0, 0.5, 0.01, parent=self))
         self.factors.append(BasicSlider(0.01, 32.0, 2.0, 0.01, parent=self))
         self.factors.append(BasicSlider(0.01, 32.0, 8.0, 0.01, parent=self))
         self.factors.append(BasicSlider(0.01, 32.0, 32.0, 0.01, parent=self))
 
-        for sld in self.factors:
+        for i, sld in enumerate(self.factors):
+            btn_layout.addWidget(QLabel(f"Factor {i}"))
             btn_layout.addWidget(sld)
 
-        mainlayout.addLayout(btn_layout)
-        main_widget.setLayout(mainlayout)
+        btn_layout.addSpacing(15)
 
-        self.setCentralWidget(main_widget)
-        self.resize(1920, 540)
+        # Capture button
+        self.btn_snap = QPushButton("Snap & Process HDR")
+        self.btn_snap.setMinimumHeight(40)
+        self.btn_snap.clicked.connect(self.on_snap)
+        btn_layout.addWidget(self.btn_snap)
 
-    def update_controls(self):
-        """En- or disable the buttons."""
-        if self.grabber.is_device_valid:
-            self.btn_properties.setEnabled(True)
-            self.btn_start.setEnabled(True)
-            if self.grabber.is_streaming:
-                self.btn_start.setText("Stop")
-                self.btn_snap.setEnabled(True)
-            else:
-                self.btn_start.setText("Start")
-                self.btn_snap.setEnabled(False)
-        else:
-            self.btn_properties.setEnabled(False)
-            self.btn_start.setEnabled(False)
-            self.btn_start.setText("Start")
-            self.btn_snap.setEnabled(False)
+        btn_layout.addSpacing(10)
 
-    def create_state_file_names(self):
-        """Create directory for the device state
-        and make the name of the device state file.
-        """
-        appdata_directory = QStandardPaths.writableLocation(
-            QStandardPaths.StandardLocation.AppDataLocation
-        )
-        QDir(appdata_directory).mkpath(".")
-        self.device_file = appdata_directory + "/stillimagehdr.json"
+        # Save images checkbox info
+        btn_layout.addWidget(QLabel("Images saved to current directory"))
 
-    def on_select_device(self):
-        """Show the IC 4 device selection dialog."""
-        dlg = DeviceSelectionDialog(self.grabber, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            pass
-        self.update_controls()
+        btn_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        main_layout.addLayout(btn_layout, 1)
 
-    def on_device_properties(self):
-        """Show the property dialog for the selected device."""
-        if self.grabber.is_device_valid:
-            dlg = PropertyDialog(self.grabber, self)
-            dlg.exec()
+        self.setLayout(main_layout)
 
-    def on_start(self):
-        """Start and stop the live video."""
-        if self.grabber.is_device_valid:
-            if self.grabber.is_streaming:
-                self.grabber.stream_stop()
-            else:
-                self.grabber.stream_setup(self.queue_sink, self.display)
+        # Show factor 1 and 2 initially (for 4 frame mode)
+        self.on_frames_clicked()
 
-        self.update_controls()
+    def apply_theme(self) -> None:
+        """Apply the current theme to this dialog."""
+        if self.resource_selector:
+            style_manager = get_style_manager()
+            style_manager.apply_theme(self.resource_selector.get_theme())
 
     def on_frames_clicked(self):
         """Show the exposure factor sliders depending on
@@ -267,33 +223,17 @@ class MainWindow(QMainWindow):
 
     def on_snap(self):
         """Start the snap and HDR calculation process"""
+        if not self.grabber.is_device_valid:
+            QMessageBox.warning(
+                self,
+                "HDR Capture",
+                "No device selected.",
+                QMessageBox.StandardButton.Ok,
+            )
+            return
+
+        self.btn_snap.setEnabled(False)
         self.snap_and_process()
-
-    def customEvent(self, ev: QEvent):
-        """Handle the Device Lost custom event"""
-        if ev.type() == DEVICE_LOST_EVENT:
-            self.on_device_lost()
-
-    def on_device_lost(self):
-        """Show a message box, if the current camera disconnected."""
-        QMessageBox.warning(
-            self,
-            "Still Image HDR Capture",
-            "The video capture device is lost!",
-            QMessageBox.StandardButton.Ok,
-        )
-        self.update_controls()
-
-    def closeEvent(self, event):
-        """Called by PySide6 when closing the application."""
-
-        if self.grabber.is_streaming:
-            self.grabber.stream_stop()
-
-        if self.grabber.is_device_valid:
-            self.grabber.device_save_state_to_file(self.device_file)
-        time.sleep(1)
-        print("The End")
 
     def calc_exposure_times(self, exposure_time: float) -> list[float]:
         """Create a list of exposure times for the images to be captured.
@@ -371,7 +311,7 @@ class MainWindow(QMainWindow):
             for buffer in self.listener.buffer_list:
                 buffer_list.append(buffer)
         else:
-            print("Timeout")
+            print("Timeout during multi-frame capture")
 
         prop_map.set_value(PropId.MULTI_FRAME_SET_OUTPUT_MODE_ENABLE, False)
 
@@ -400,7 +340,7 @@ class MainWindow(QMainWindow):
         if success:
             buffer_list.append(self.listener.buffer_list[0])
         else:
-            print("timeout!")
+            print("Timeout during software trigger capture")
 
     def acquire_software_trigger(
         self, prop_map: PropertyMap, exposure_times: list[float]
@@ -452,43 +392,84 @@ class MainWindow(QMainWindow):
         - Save and display the images.
         - Enable camera automatics.
         """
-        start = time.time()
-        prop_map = self.grabber.device_property_map
 
-        self.enable_automatics(prop_map, "Off")
+        def worker():
+            try:
+                start = time.time()
+                prop_map = self.grabber.device_property_map
 
-        current_exposure_time = prop_map.get_value_float(PropId.EXPOSURE_TIME)
+                self.enable_automatics(prop_map, "Off")
 
-        exposure_times = self.calc_exposure_times(current_exposure_time)
+                current_exposure_time = prop_map.get_value_float(PropId.EXPOSURE_TIME)
 
-        try:
-            buffer_list = self.acquire_multi_frame_output_mode(prop_map, exposure_times)
+                exposure_times = self.calc_exposure_times(current_exposure_time)
 
-        except IC4Exception:
-            buffer_list = self.acquire_software_trigger(prop_map, exposure_times)
+                try:
+                    buffer_list = self.acquire_multi_frame_output_mode(
+                        prop_map, exposure_times
+                    )
 
-        wrap_list = [b.numpy_wrap() for b in buffer_list]
-        print(f"Time taken to capture images was {time.time()-start} seconds")
+                except IC4Exception:
+                    buffer_list = self.acquire_software_trigger(
+                        prop_map, exposure_times
+                    )
 
-        # Merge Mertens is used as HDR image merger
-        merger = cv2.createMergeMertens()
-        res_merger = merger.process(wrap_list)
-        res_8bit = np.clip(res_merger * 255, 0, 255).astype("uint8")
+                if not buffer_list:
+                    self._poll_signals.error.emit("No images captured")
+                    return
 
-        print(f"Time taken to run the code was {time.time()-start} seconds")
+                wrap_list = [b.numpy_wrap() for b in buffer_list]
+                print(f"Time taken to capture images was {time.time()-start} seconds")
 
-        # Save the captured and processed images
-        for i, b in enumerate(buffer_list):
-            b.save_as_jpeg(f"{i+1}.jpg")
+                # Merge Mertens is used as HDR image merger
+                merger = cv2.createMergeMertens()
+                res_merger = merger.process(wrap_list)
+                res_8bit = np.clip(res_merger * 255, 0, 255).astype("uint8")
 
-        cv2.imwrite(r"fusion_mertens.jpg", res_8bit)
+                print(f"Time taken to run the code was {time.time()-start} seconds")
 
-        self.show_hdr_image(res_8bit)
+                # Save the captured and processed images
+                for i, b in enumerate(buffer_list):
+                    b.save_as_jpeg(f"hdr_capture_{i+1}.jpg")
 
-        # Restore previous exposure time that was determined by exposure auto
-        prop_map.set_value(PropId.EXPOSURE_TIME, current_exposure_time)
+                cv2.imwrite("hdr_fusion_mertens.jpg", res_8bit)
 
-        self.enable_automatics(prop_map, "Continuous")
+                # Restore previous exposure time that was determined by exposure auto
+                prop_map.set_value(PropId.EXPOSURE_TIME, current_exposure_time)
+
+                self.enable_automatics(prop_map, "Continuous")
+
+                # Show the result (pass it through the signal)
+                self._hdr_result = res_8bit
+                self._poll_signals.finished.emit()
+
+            except Exception as e:
+                self._poll_signals.error.emit(str(e))
+
+        # Run in background thread
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+
+    def _on_capture_finished(self):
+        """Called when HDR capture and processing is complete."""
+        self.show_hdr_image(self._hdr_result)
+        self.btn_snap.setEnabled(True)
+        QMessageBox.information(
+            self,
+            "HDR Capture Complete",
+            "HDR image has been processed and saved.",
+            QMessageBox.StandardButton.Ok,
+        )
+
+    def _on_capture_error(self, error_msg: str):
+        """Called when an error occurs during capture."""
+        self.btn_snap.setEnabled(True)
+        QMessageBox.critical(
+            self,
+            "HDR Capture Error",
+            f"An error occurred: {error_msg}",
+            QMessageBox.StandardButton.Ok,
+        )
 
     def show_hdr_image(self, image: np.typing.NDArray[Any]):
         """Show the numpy image on the result display.
@@ -508,19 +489,3 @@ class MainWindow(QMainWindow):
         cv2.copyTo(image, mask, matdest)
 
         self.result_display.display_buffer(poolbuffer)
-
-
-if __name__ == "__main__":
-    # This is just the default Qt main function template, with added calls to Library.init() and Library.exit()
-    from sys import argv
-
-    app = QApplication(argv)
-
-    Library.init()
-
-    wnd = MainWindow()
-    wnd.show()
-
-    app.exec()
-
-    Library.exit()

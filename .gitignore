@@ -15,3 +15,8 @@ wheels/
 
 # custom
 ic4-examples/
+old/
+
+# images (for now) (not .png because those are our icons)
+*.jpg
+*.bmp

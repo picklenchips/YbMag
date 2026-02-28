@@ -25,14 +25,12 @@ from PyQt6.QtGui import (
     QSurface,
     QExposeEvent,
     QPlatformSurfaceEvent,
-    QPainter,
-    QPen,
-    QColor,
     QMouseEvent,
 )
 
 from imagingcontrol4.display import Display, ExternalOpenGLDisplay
 from imagingcontrol4.imagebuffer import ImageBuffer
+from OpenGL import GL
 
 
 class _DisplayWindow(QWindow):
@@ -40,6 +38,9 @@ class _DisplayWindow(QWindow):
     _context: QOpenGLContext
     _displayRef: ref[ExternalOpenGLDisplay] | None = None
     _is_initialized: bool = False
+    _roi_start: QPoint | None = None
+    _roi_end: QPoint | None = None
+    _roi_is_drawing: bool = False
 
     def __init__(self, owner: QWidget):
         QWindow.__init__(self)
@@ -72,6 +73,21 @@ class _DisplayWindow(QWindow):
             self._display.notify_window_closed()
         self._is_initialized = False
 
+    def set_roi_overlay(
+        self, start: QPoint | None, end: QPoint | None, is_drawing: bool
+    ):
+        """Update ROI overlay state for rendering.
+
+        Args:
+            start: Start point in logical pixels (or None to hide overlay)
+            end: End point in logical pixels
+            is_drawing: Whether currently drawing (affects fill color)
+        """
+        self._roi_start = start
+        self._roi_end = end
+        self._roi_is_drawing = is_drawing
+        self.requestUpdate()  # Trigger redraw
+
     def _render_now(self, force: bool = False):
         """Render the display if the window is exposed, or if force=True."""
         if not self.isExposed() and not force:
@@ -83,14 +99,113 @@ class _DisplayWindow(QWindow):
             ratio = self._owner.devicePixelRatio()
             w = int(self.width() * ratio)
             h = int(self.height() * ratio)
+            gl_getter = getattr(self._context, "functions", None)
+            gl = gl_getter() if callable(gl_getter) else None
+            gl_viewport = getattr(gl, "glViewport", None)
+
+            # Ensure viewport is valid for camera renderer, even after painter usage
+            if callable(gl_viewport):
+                gl_viewport(0, 0, w, h)
 
             if self._display is not None:
                 self._display.render(w, h)
+
+            # Draw ROI overlay on top of rendered image, but never let overlay
+            # failures break camera rendering.
+            try:
+                self._draw_roi_overlay(w, h, ratio)
+            except Exception:
+                # Disable overlay if something goes wrong; keep video alive.
+                self._roi_start = None
+                self._roi_end = None
+                self._roi_is_drawing = False
+
+            # Restore viewport in case overlay changed GL state.
+            if callable(gl_viewport):
+                gl_viewport(0, 0, w, h)
 
             self._context.swapBuffers(self)
             self._context.doneCurrent()
 
         self.requestUpdate()
+
+    def _draw_roi_overlay(self, device_width: int, device_height: int, ratio: float):
+        """Draw ROI rectangle overlay using raw OpenGL calls.
+
+        Args:
+            device_width: Physical pixel width of render target
+            device_height: Physical pixel height of render target
+            ratio: Device pixel ratio for coordinate scaling
+        """
+        if self._roi_start is None or self._roi_end is None:
+            return
+
+        # Scale ROI coordinates from logical to physical pixels
+        x1 = self._roi_start.x() * ratio
+        y1 = self._roi_start.y() * ratio
+        x2 = self._roi_end.x() * ratio
+        y2 = self._roi_end.y() * ratio
+
+        # Normalize coordinates
+        x_min = min(x1, x2)
+        x_max = max(x1, x2)
+        y_min = min(y1, y2)
+        y_max = max(y1, y2)
+
+        # Save current shader program (not saved by glPushAttrib)
+        current_program = GL.glGetIntegerv(GL.GL_CURRENT_PROGRAM)
+
+        # Save current GL state
+        GL.glPushAttrib(GL.GL_ALL_ATTRIB_BITS)
+        GL.glMatrixMode(GL.GL_PROJECTION)
+        GL.glPushMatrix()
+        GL.glLoadIdentity()
+        GL.glOrtho(0, device_width, device_height, 0, -1, 1)  # Top-left origin
+        GL.glMatrixMode(GL.GL_MODELVIEW)
+        GL.glPushMatrix()
+        GL.glLoadIdentity()
+
+        # Disable depth test and enable blending for overlay
+        GL.glDisable(GL.GL_DEPTH_TEST)
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+
+        # Disable shader program and revert to fixed-function pipeline for glColor4f
+        GL.glUseProgram(0)
+        GL.glDisable(GL.GL_TEXTURE_2D)
+        GL.glDisable(GL.GL_LIGHTING)
+
+        # Draw blue rectangle outline (2px line width)
+        GL.glLineWidth(2.0)
+        GL.glColor4f(0.0, 0.39, 1.0, 1.0)  # Solid blue (RGB: 0, 100, 255)
+        GL.glBegin(GL.GL_LINE_LOOP)
+        GL.glVertex2f(x_min, y_min)
+        GL.glVertex2f(x_max, y_min)
+        GL.glVertex2f(x_max, y_max)
+        GL.glVertex2f(x_min, y_max)
+        GL.glEnd()
+
+        # Draw semi-transparent blue fill while currently drawing
+        if self._roi_is_drawing:
+            GL.glColor4f(
+                0.0, 0.39, 1.0, 0.2
+            )  # Blue with 20% opacity (RGB: 0, 100, 255)
+            GL.glBegin(GL.GL_QUADS)
+            GL.glVertex2f(x_min, y_min)
+            GL.glVertex2f(x_max, y_min)
+            GL.glVertex2f(x_max, y_max)
+            GL.glVertex2f(x_min, y_max)
+            GL.glEnd()
+
+        # Restore GL state
+        GL.glMatrixMode(GL.GL_PROJECTION)
+        GL.glPopMatrix()
+        GL.glMatrixMode(GL.GL_MODELVIEW)
+        GL.glPopMatrix()
+        GL.glPopAttrib()
+
+        # Restore shader program (not restored by glPopAttrib)
+        GL.glUseProgram(current_program)
 
     def event(self, ev: QEvent) -> bool:
         """Handle window events for initialization, rendering, and cleanup."""
@@ -177,50 +292,6 @@ class DisplayWidget(QWidget):
             return False
 
 
-class _ROIPaintOverlay(QWidget):
-    """Transparent overlay widget that paints the ROI rectangle."""
-
-    def __init__(self, parent: "EnhancedDisplayWidget"):
-        super().__init__(parent)
-        self.enhanced_display = parent
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setStyleSheet("background: transparent;")
-        self.setMouseTracking(True)
-
-    def leaveEvent(self, event):
-        """Handle mouse leave to clear pixel info."""
-        super().leaveEvent(event)
-        self.enhanced_display.pixel_info.emit("")
-
-    def paintEvent(self, event):
-        """Paint the ROI rectangle on top of the display."""
-        # Don't call super() to avoid clearing/painting background
-
-        # Draw ROI rectangle if exists
-        if (
-            self.enhanced_display._roi_start_window is not None
-            and self.enhanced_display._roi_end_window is not None
-        ):
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-            # Draw rectangle
-            pen = QPen(QColor(0, 255, 0), 2, Qt.PenStyle.SolidLine)
-            painter.setPen(pen)
-
-            rect = QRect(
-                self.enhanced_display._roi_start_window,
-                self.enhanced_display._roi_end_window,
-            ).normalized()
-            painter.drawRect(rect)
-
-            # Draw semi-transparent fill if currently drawing
-            if self.enhanced_display._is_drawing_roi:
-                painter.fillRect(rect, QColor(0, 255, 0, 30))
-
-            painter.end()
-
-
 class EnhancedDisplayWidget(DisplayWidget):
     """Enhanced display widget with ROI selection and pixel info on hover.
 
@@ -243,17 +314,13 @@ class EnhancedDisplayWidget(DisplayWidget):
         self._roi_start_window: QPoint | None = None
         self._roi_end_window: QPoint | None = None
         self._is_drawing_roi: bool = False
+        self._last_mouse_pos: QPoint | None = None
+        self._pixel_coord_offset_x: int = 0
+        self._pixel_coord_offset_y: int = 0
 
         # Enable mouse tracking to get move events without button press
         self._display_container.setMouseTracking(True)
         self.setMouseTracking(True)
-
-        # Create transparent overlay widget for ROI drawing
-        # This must be done AFTER the parent __init__ so we have access to _display_container
-        self._roi_overlay = _ROIPaintOverlay(self)
-        # Set overlay to fill the entire widget
-        self._roi_overlay.setGeometry(0, 0, self.width(), self.height())
-        self._roi_overlay.raise_()  # Bring to front above display container
 
     def set_current_buffer(self, buffer: ImageBuffer | None):
         """Store reference to currently displayed buffer for pixel inspection.
@@ -264,6 +331,25 @@ class EnhancedDisplayWidget(DisplayWidget):
             buffer: The ImageBuffer currently being displayed, or None to clear
         """
         self._current_buffer = buffer
+        # Update pixel info at last known position to reflect new buffer data
+        if self._last_mouse_pos is not None:
+            info = self._format_pixel_info(self._last_mouse_pos)
+            self.pixel_info.emit(info)
+
+    def set_pixel_coord_offset(self, offset_x: int, offset_y: int):
+        """Set camera-space coordinate offset for pixel info readout.
+
+        Args:
+            offset_x: Current camera ROI X offset
+            offset_y: Current camera ROI Y offset
+        """
+        self._pixel_coord_offset_x = offset_x
+        self._pixel_coord_offset_y = offset_y
+
+        # Refresh live pixel info immediately at current cursor position.
+        if self._last_mouse_pos is not None:
+            info = self._format_pixel_info(self._last_mouse_pos)
+            self.pixel_info.emit(info)
 
     def get_roi_camera_coords(self) -> tuple[int, int, int, int] | None:
         """Get ROI rectangle in camera/image pixel coordinates.
@@ -325,7 +411,7 @@ class EnhancedDisplayWidget(DisplayWidget):
         self._roi_start_window = None
         self._roi_end_window = None
         self._is_drawing_roi = False
-        self._roi_overlay.update()  # Trigger repaint to clear ROI
+        self._display_window.set_roi_overlay(None, None, False)
 
     def _window_to_image_coords(
         self, win_x: int, win_y: int, win_w: int, win_h: int, img_w: int, img_h: int
@@ -392,50 +478,75 @@ class EnhancedDisplayWidget(DisplayWidget):
         except Exception:
             return None
 
+    def _format_pixel_info(self, pos: QPoint) -> str:
+        """Format pixel info at the given position into a display string.
+
+        Args:
+            pos: Position in window coordinates
+
+        Returns:
+            Formatted string like "px (x, y) = value" or empty string if unavailable
+        """
+        if not self._current_buffer:
+            return ""
+
+        pixel_info = self._get_pixel_value_at(pos.x(), pos.y())
+        if not pixel_info:
+            return ""
+
+        img_x, img_y, value = pixel_info
+
+        # Format value based on type
+        try:
+            # Try to squeeze if it's a single-element array
+            if hasattr(value, "__len__") and not isinstance(value, (str, bytes)):
+                if len(value) == 1:  # type: ignore
+                    # Single element - extract it
+                    value = value[0]  # type: ignore
+
+            # Now handle the (possibly squeezed) value
+            if hasattr(value, "__len__") and not isinstance(value, (str, bytes)):
+                # Multi-channel (e.g., RGB)
+                # Convert numpy array to tuple of native Python ints
+                try:
+                    value_tuple = tuple(
+                        int(v.item()) if hasattr(v, "item") else int(v) for v in value  # type: ignore
+                    )
+                    value_str = str(value_tuple)
+                except Exception:
+                    value_str = str(tuple(value))  # type: ignore
+            else:
+                # Convert numpy scalar to native Python type
+                if hasattr(value, "item"):
+                    value_str = str(int(value.item()))  # type: ignore
+                else:
+                    value_str = str(
+                        int(value) if isinstance(value, (int, float)) else value
+                    )
+        except Exception:
+            value_str = str(value)
+
+        abs_x = img_x + self._pixel_coord_offset_x
+        abs_y = img_y + self._pixel_coord_offset_y
+        return f"px ({abs_x}, {abs_y}) = {value_str}"
+
     def mouseMoveEvent(self, event: QMouseEvent):
         """Handle mouse move for ROI drawing and pixel info display."""
         super().mouseMoveEvent(event)
 
+        # Store current mouse position for live updates when buffer changes
+        self._last_mouse_pos = event.pos()
+
         # Update ROI rectangle if drawing
         if self._is_drawing_roi:
             self._roi_end_window = event.pos()
-            self._roi_overlay.update()  # Trigger repaint of overlay
+            self._display_window.set_roi_overlay(
+                self._roi_start_window, self._roi_end_window, self._is_drawing_roi
+            )
 
         # Update pixel info
-        if self._current_buffer:
-            pixel_info = self._get_pixel_value_at(event.pos().x(), event.pos().y())
-            if pixel_info:
-                img_x, img_y, value = pixel_info
-
-                # Format value based on type
-                try:
-                    if hasattr(value, "__len__") and not isinstance(
-                        value, (str, bytes)
-                    ):  # Multi-channel (e.g., RGB)
-                        # Convert numpy array to tuple of native Python ints
-                        try:
-                            value_tuple = tuple(int(v.item()) if hasattr(v, "item") else int(v) for v in value)  # type: ignore
-                            value_str = str(value_tuple)
-                        except Exception:
-                            value_str = str(tuple(value))  # type: ignore
-                    else:
-                        # Convert numpy scalar to native Python type
-                        if hasattr(value, "item"):
-                            value_str = str(int(value.item()))  # type: ignore
-                        else:
-                            value_str = str(
-                                int(value) if isinstance(value, (int, float)) else value
-                            )
-                except Exception:
-                    value_str = str(value)
-
-                info_text = f"px ({img_x}, {img_y}) = {value_str}"
-                # Emit signal instead of showing label
-                self.pixel_info.emit(info_text)
-            else:
-                self.pixel_info.emit("")
-        else:
-            self.pixel_info.emit("")
+        info = self._format_pixel_info(event.pos())
+        self.pixel_info.emit(info)
 
     def mousePressEvent(self, event: QMouseEvent):
         """Handle mouse press to start ROI selection."""
@@ -445,7 +556,9 @@ class EnhancedDisplayWidget(DisplayWidget):
             self._roi_start_window = event.pos()
             self._roi_end_window = event.pos()
             self._is_drawing_roi = True
-            self._roi_overlay.update()  # Trigger paint event
+            self._display_window.set_roi_overlay(
+                self._roi_start_window, self._roi_end_window, self._is_drawing_roi
+            )
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         """Handle mouse release to complete ROI selection."""
@@ -454,7 +567,9 @@ class EnhancedDisplayWidget(DisplayWidget):
         if event.button() == Qt.MouseButton.LeftButton and self._is_drawing_roi:
             self._is_drawing_roi = False
             self._roi_end_window = event.pos()
-            self._roi_overlay.update()  # Trigger paint event
+            self._display_window.set_roi_overlay(
+                self._roi_start_window, self._roi_end_window, self._is_drawing_roi
+            )
 
             # Emit signal with camera coordinates
             roi = self.get_roi_camera_coords()
@@ -468,16 +583,6 @@ class EnhancedDisplayWidget(DisplayWidget):
         """Clear pixel info when mouse leaves widget."""
         super().leaveEvent(event)
         self.pixel_info.emit("")
-        # Also forward to overlay
-        if self._roi_overlay:
-            self._roi_overlay.leaveEvent(event)
-
-    def resizeEvent(self, event):
-        """Handle resize events to keep overlay in sync."""
-        super().resizeEvent(event)
-        # Resize overlay to match this widget
-        if self._roi_overlay:
-            self._roi_overlay.setGeometry(0, 0, self.width(), self.height())
 
 
 class DisplayWindow(QMainWindow):

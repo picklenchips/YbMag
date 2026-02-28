@@ -1,5 +1,7 @@
 from threading import Lock
 import gc
+from pathlib import Path
+from typing import cast
 
 # PyQT6 imports
 from PyQt6.QtCore import (
@@ -37,14 +39,22 @@ from imagingcontrol4.videowriter import (
 from imagingcontrol4.ic4exception import IC4Exception
 from imagingcontrol4.display import DisplayRenderPosition
 from imagingcontrol4.propconstants import PropId
-from imagingcontrol4.properties import Property
+from imagingcontrol4.properties import Property, PropInteger
 
 from resources.resourceselector import get_resource_selector
 from resources.style_manager import get_style_manager, ThemeMode
 
 # local imports
 from displaywindow import EnhancedDisplayWidget
-from dialogs import PropertyDialog, DeviceSelectionDialog, SettingsDialog
+from dialogs import (
+    PropertyDialog,
+    DeviceSelectionDialog,
+    SettingsDialog,
+    PowerSupplyDialog,
+    HDRDialog,
+    RotaryMotorDialog,
+)
+from devices.rigol_dp832a import PowerSupplyManager
 
 GOT_PHOTO_EVENT = QEvent.Type(QEvent.Type.User + 1)
 DEVICE_LOST_EVENT = QEvent.Type(QEvent.Type.User + 2)
@@ -86,6 +96,10 @@ class MainWindow(QMainWindow):
         self.device_property_map = None
         self._trigger_mode_prop = None
         self._trigger_mode_notify = None
+
+        # ROI history for undo/redo (stores tuples of offset_x, offset_y, width, height)
+        self.roi_history = []  # Stack of previous ROI states
+        self.roi_redo_stack = []  # Stack for redo operations
 
         self.grabber = Grabber()
         self.grabber.event_add_device_lost(
@@ -140,6 +154,12 @@ class MainWindow(QMainWindow):
         self.property_dialog = None
         self.device_selection_dialog = None
         self.settings_dialog = None
+        self.power_supply_dialog = None
+        self.rotary_motor_dialog = None
+        self.hdr_dialog = None
+
+        # Power supply manager (Qt-free backend)
+        self.power_supply_manager = PowerSupplyManager()
 
         self.video_writer = VideoWriter(VideoWriterType.MP4_H264)
 
@@ -250,6 +270,50 @@ class MainWindow(QMainWindow):
         self.close_device_act.setShortcuts(QKeySequence.StandardKey.Close)
         self.close_device_act.triggered.connect(self.onCloseDevice)
 
+        self.power_supply_act = QAction(
+            selector.loadIcon("images/power.png"), "&Power Supplies", self
+        )
+        self.power_supply_act.setStatusTip("Open power supply controls")
+        self.power_supply_act.setCheckable(True)
+        self.power_supply_act.triggered.connect(self.onPowerSupplies)
+
+        self.rotary_motor_act = QAction(
+            selector.loadIcon("images/rotary.png"), "&Rotary Motor", self
+        )
+        self.rotary_motor_act.setStatusTip("Open rotary motor controls")
+        self.rotary_motor_act.setCheckable(True)
+        self.rotary_motor_act.triggered.connect(self.onRotaryMotor)
+
+        self.hdr_act = QAction(
+            selector.loadIcon("images/photo.png"), "&HDR Capture", self
+        )
+        self.hdr_act.setStatusTip("Open HDR image capture dialog")
+        self.hdr_act.setCheckable(True)
+        self.hdr_act.triggered.connect(self.onHDRCapture)
+
+        self.apply_roi_act = QAction(
+            selector.loadIcon("images/crop.png"), "Apply &ROI to Camera", self
+        )
+        self.apply_roi_act.setStatusTip("Apply drawn ROI to camera sensor region")
+        self.apply_roi_act.setShortcut(QKeySequence("Ctrl+K"))
+        self.apply_roi_act.triggered.connect(self.onApplyROI)
+
+        self.reset_roi_act = QAction(
+            selector.loadIcon("images/fullsize.png"), "Reset Camera R&OI", self
+        )
+        self.reset_roi_act.setStatusTip("Reset camera to full sensor region")
+        self.reset_roi_act.triggered.connect(self.onResetROI)
+
+        self.undo_roi_act = QAction("&Undo Crop", self)
+        self.undo_roi_act.setStatusTip("Undo last ROI crop")
+        self.undo_roi_act.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_roi_act.triggered.connect(self.onUndoROI)
+
+        self.redo_roi_act = QAction("&Redo Crop", self)
+        self.redo_roi_act.setStatusTip("Redo last undone ROI crop")
+        self.redo_roi_act.setShortcut(QKeySequence.StandardKey.Redo)
+        self.redo_roi_act.triggered.connect(self.onRedoROI)
+
         settings_act = QAction("&UI Settings", self)
         settings_act.setStatusTip("Configure UI settings (theme, etc.)")
         settings_act.triggered.connect(self.onUISettings)
@@ -274,7 +338,18 @@ class MainWindow(QMainWindow):
         device_menu.addAction(self.trigger_mode_act)
         device_menu.addAction(self.stream_act)
         device_menu.addSeparator()
+        device_menu.addAction(self.apply_roi_act)
+        device_menu.addAction(self.reset_roi_act)
+        device_menu.addAction(self.undo_roi_act)
+        device_menu.addAction(self.redo_roi_act)
+        device_menu.addSeparator()
         device_menu.addAction(self.close_device_act)
+
+        instruments_menu = menubar.addMenu("&Instruments")
+        assert instruments_menu is not None
+        instruments_menu.addAction(self.power_supply_act)
+        instruments_menu.addAction(self.rotary_motor_act)
+        instruments_menu.addAction(self.hdr_act)
 
         capture_menu = menubar.addMenu("&Capture")
         assert capture_menu is not None
@@ -291,10 +366,17 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self.stream_act)
         toolbar.addSeparator()
+        toolbar.addAction(self.apply_roi_act)
+        toolbar.addAction(self.reset_roi_act)
+        toolbar.addSeparator()
         toolbar.addAction(self.shoot_photo_act)
         toolbar.addSeparator()
         toolbar.addAction(self.record_act)
         toolbar.addAction(self.record_stop_act)
+        toolbar.addSeparator()
+        toolbar.addAction(self.power_supply_act)
+        toolbar.addAction(self.rotary_motor_act)
+        toolbar.addAction(self.hdr_act)
 
         self.video_widget = EnhancedDisplayWidget()
         self.video_widget.setMinimumSize(640, 480)
@@ -361,7 +443,10 @@ class MainWindow(QMainWindow):
         self.video_widget.set_current_buffer(None)
 
         # 2. Unregister trigger-mode notification and release the Property ref
-        if self._trigger_mode_prop is not None and self._trigger_mode_notify is not None:
+        if (
+            self._trigger_mode_prop is not None
+            and self._trigger_mode_notify is not None
+        ):
             try:
                 self._trigger_mode_prop.event_remove_notification(
                     self._trigger_mode_notify
@@ -374,10 +459,7 @@ class MainWindow(QMainWindow):
         # 3. If the property dialog is alive, clear its model so it drops all
         #    Property / PropertyMap handles
         if self.property_dialog is not None:
-            for tree in self.property_dialog._trees.values():
-                tree.clear_model()
-            self.property_dialog._map = None
-            self.property_dialog._grabber = None
+            self.property_dialog.clear_all()
 
         # 4. Clear our own property map reference
         self.device_property_map = None
@@ -404,6 +486,7 @@ class MainWindow(QMainWindow):
             )
 
         self.updateCameraLabel()
+        self.video_widget.set_pixel_coord_offset(0, 0)
         self.updateControls()
 
     def closeEvent(self, ev: QCloseEvent):
@@ -412,6 +495,23 @@ class MainWindow(QMainWindow):
 
         if self.grabber.is_device_valid:
             self.grabber.device_save_state_to_file(self.device_file)
+
+        # Clear property dialog models so PropertyMap refs are released
+        # before the Library context is torn down
+        if self.property_dialog is not None:
+            self.property_dialog.clear_all()
+            self.property_dialog = None
+
+        # Cleanup rotary motor dialog (disconnects motor)
+        if self.rotary_motor_dialog is not None:
+            self.rotary_motor_dialog.cleanup()
+            self.rotary_motor_dialog.close()
+            self.rotary_motor_dialog = None
+
+        # Force cyclic GC so PropertyMap / Property pointers wrapped by
+        # PropertyTreeNode (which have parent<->children cycles) are freed
+        # while the IC4 Library context is still alive.
+        gc.collect()
 
     def customEvent(self, ev: QEvent):
         if ev.type() == DEVICE_LOST_EVENT:
@@ -477,6 +577,7 @@ class MainWindow(QMainWindow):
                 title="Device Properties",
                 resource_selector=selector,
                 additional_maps=additional_maps,
+                tabbed=selector.get_tabbed_properties(),
             )
             self.property_dialog.apply_theme()
             self.property_dialog.finished.connect(self._onPropertyDialogClosed)
@@ -490,6 +591,7 @@ class MainWindow(QMainWindow):
         # Save codec config when properties dialog closes
         self.video_writer.property_map.serialize_to_file(self.codec_config_file)
         self.device_properties_act.setChecked(False)
+        self.property_dialog = None
 
     def onDeviceDriverProperties(self):
         selector = get_resource_selector()
@@ -519,6 +621,276 @@ class MainWindow(QMainWindow):
     def onShootPhoto(self):
         with self.shoot_photo_mutex:
             self.shoot_photo = True
+
+    def _get_current_roi_state(self) -> tuple[int, int, int, int] | None:
+        """Get current camera ROI state as (offset_x, offset_y, width, height)."""
+        if not self.grabber.is_device_valid:
+            return None
+        try:
+            prop_map = self.grabber.device_property_map
+            offset_x = prop_map.get_value_int(PropId.OFFSET_X)
+            offset_y = prop_map.get_value_int(PropId.OFFSET_Y)
+            width = prop_map.get_value_int(PropId.WIDTH)
+            height = prop_map.get_value_int(PropId.HEIGHT)
+            return (offset_x, offset_y, width, height)
+        except Exception as e:
+            print(f"Error getting ROI state: {e}")
+            return None
+
+    def _save_roi_to_history(self):
+        """Save current ROI state to history before changing it."""
+        current_state = self._get_current_roi_state()
+        if current_state:
+            self.roi_history.append(current_state)
+            # Clear redo stack when new action is taken
+            self.roi_redo_stack.clear()
+
+    def _sync_pixel_coord_offset(self):
+        """Sync display pixel coordinate offset with current camera ROI offset."""
+        if not self.grabber.is_device_valid:
+            self.video_widget.set_pixel_coord_offset(0, 0)
+            return
+
+        try:
+            prop_map = self.grabber.device_property_map
+            offset_x = prop_map.get_value_int(PropId.OFFSET_X)
+            offset_y = prop_map.get_value_int(PropId.OFFSET_Y)
+            self.video_widget.set_pixel_coord_offset(offset_x, offset_y)
+        except Exception:
+            self.video_widget.set_pixel_coord_offset(0, 0)
+
+    def _apply_roi_state(self, offset_x: int, offset_y: int, width: int, height: int):
+        """Apply specific ROI state to camera (low-level helper)."""
+        if not self.grabber.is_device_valid:
+            return False
+
+        # Stop stream if running
+        was_streaming = self.grabber.is_streaming
+        if was_streaming:
+            try:
+                self.grabber.stream_stop()
+            except Exception as e:
+                print(f"Error stopping stream: {e}")
+                return False
+
+        try:
+            prop_map = self.grabber.device_property_map
+            prop_map.set_value(PropId.OFFSET_AUTO_CENTER, "Off")
+
+            width_prop = prop_map.find(PropId.WIDTH)
+            height_prop = prop_map.find(PropId.HEIGHT)
+            offset_x_prop = prop_map.find(PropId.OFFSET_X)
+            offset_y_prop = prop_map.find(PropId.OFFSET_Y)
+
+            if not all(
+                isinstance(p, PropInteger)
+                for p in (width_prop, height_prop, offset_x_prop, offset_y_prop)
+            ):
+                raise RuntimeError("Missing integer ROI properties on camera")
+
+            width_prop = cast(PropInteger, width_prop)
+            height_prop = cast(PropInteger, height_prop)
+            offset_x_prop = cast(PropInteger, offset_x_prop)
+            offset_y_prop = cast(PropInteger, offset_y_prop)
+
+            def _align_down(value: int, increment: int, base: int) -> int:
+                if increment <= 1:
+                    return value
+                return base + ((value - base) // increment) * increment
+
+            def _align_up(value: int, increment: int, base: int) -> int:
+                if increment <= 1:
+                    return value
+                return base + ((value - base + increment - 1) // increment) * increment
+
+            width_inc = max(1, width_prop.increment)
+            height_inc = max(1, height_prop.increment)
+            off_x_inc = max(1, offset_x_prop.increment)
+            off_y_inc = max(1, offset_y_prop.increment)
+
+            requested_width = width
+            requested_height = height
+
+            # If requested ROI is smaller than minimum, expand size and shift offsets
+            # so ROI center stays approximately the same.
+            if requested_width < width_prop.minimum:
+                delta_w = width_prop.minimum - requested_width
+                offset_x -= delta_w // 2
+                width = width_prop.minimum
+            if requested_height < height_prop.minimum:
+                delta_h = height_prop.minimum - requested_height
+                offset_y -= delta_h // 2
+                height = height_prop.minimum
+
+            # Enforce min/max and increment for width/height.
+            width = max(width_prop.minimum, min(width, width_prop.maximum))
+            height = max(height_prop.minimum, min(height, height_prop.maximum))
+            width = _align_up(width, width_inc, width_prop.minimum)
+            height = _align_up(height, height_inc, height_prop.minimum)
+            width = min(width, _align_down(width_prop.maximum, width_inc, width_prop.minimum))
+            height = min(
+                height,
+                _align_down(height_prop.maximum, height_inc, height_prop.minimum),
+            )
+
+            # Compute legal offset bounds that also keep ROI inside full sensor.
+            sensor_width = width_prop.maximum
+            sensor_height = height_prop.maximum
+            max_offset_x_by_size = sensor_width - width
+            max_offset_y_by_size = sensor_height - height
+
+            offset_x_min = offset_x_prop.minimum
+            offset_y_min = offset_y_prop.minimum
+            offset_x_max = min(offset_x_prop.maximum, max_offset_x_by_size)
+            offset_y_max = min(offset_y_prop.maximum, max_offset_y_by_size)
+
+            # Clip + align offsets to valid range/increment.
+            offset_x = max(offset_x_min, min(offset_x, offset_x_max))
+            offset_y = max(offset_y_min, min(offset_y, offset_y_max))
+            offset_x = _align_down(offset_x, off_x_inc, offset_x_min)
+            offset_y = _align_down(offset_y, off_y_inc, offset_y_min)
+            offset_x = max(offset_x_min, min(offset_x, offset_x_max))
+            offset_y = max(offset_y_min, min(offset_y, offset_y_max))
+
+            # Apply dimensions first, then offsets.
+            prop_map.set_value(PropId.WIDTH, width)
+            prop_map.set_value(PropId.HEIGHT, height)
+            prop_map.set_value(PropId.OFFSET_X, offset_x)
+            prop_map.set_value(PropId.OFFSET_Y, offset_y)
+
+            # Clear the overlay ROI
+            self.video_widget.clear_roi()
+
+            status_bar = self.statusBar()
+            if status_bar:
+                status_bar.showMessage(
+                    f"ROI: Offset ({offset_x}, {offset_y}), Size {width}x{height}",
+                    3000,
+                )
+
+            self._sync_pixel_coord_offset()
+            return True
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Error Applying ROI", f"Failed to apply ROI to camera:\n{str(e)}"
+            )
+            return False
+        finally:
+            # Restart stream if it was running
+            if was_streaming:
+                try:
+                    self.grabber.stream_setup(self.sink, self.display)
+                except Exception as e:
+                    print(f"Error restarting stream: {e}")
+
+    def onApplyROI(self):
+        """Apply the drawn ROI to the camera's actual sensor region."""
+        # Get ROI from display widget
+        roi = self.video_widget.get_roi_camera_coords()
+        if roi is None:
+            QMessageBox.warning(
+                self,
+                "No ROI Selected",
+                "Please draw an ROI on the image first by clicking and dragging.",
+            )
+            return
+
+        # Save current state to history before changing
+        self._save_roi_to_history()
+
+        # Get current camera offsets to account for already-cropped view
+        try:
+            current_offset_x = self.grabber.device_property_map.get_value_int(
+                PropId.OFFSET_X
+            )
+            current_offset_y = self.grabber.device_property_map.get_value_int(
+                PropId.OFFSET_Y
+            )
+        except Exception:
+            current_offset_x = 0
+            current_offset_y = 0
+
+        # Apply the new ROI, adjusting for current camera offset
+        # (ROI coordinates are relative to the currently displayed image)
+        roi_offset_x, roi_offset_y, width, height = roi
+        absolute_offset_x = current_offset_x + roi_offset_x
+        absolute_offset_y = current_offset_y + roi_offset_y
+
+        self._apply_roi_state(absolute_offset_x, absolute_offset_y, width, height)
+
+    def onResetROI(self):
+        """Reset camera to full sensor region."""
+        if not self.grabber.is_device_valid:
+            QMessageBox.warning(self, "No Device", "Please open a camera device first.")
+            return
+
+        # Save current state to history before resetting
+        self._save_roi_to_history()
+
+        try:
+            prop_map = self.grabber.device_property_map
+
+            # Get maximum width and height
+            width_prop = prop_map.find(PropId.WIDTH)
+            height_prop = prop_map.find(PropId.HEIGHT)
+
+            # Cast to PropInteger to access maximum attribute
+            max_width = 1920  # default fallback
+            max_height = 1080  # default fallback
+            if width_prop and isinstance(width_prop, PropInteger):
+                max_width = width_prop.maximum
+            if height_prop and isinstance(height_prop, PropInteger):
+                max_height = height_prop.maximum
+
+            # Apply full sensor ROI
+            self._apply_roi_state(0, 0, max_width, max_height)
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Error Resetting ROI", f"Failed to reset camera ROI:\n{str(e)}"
+            )
+
+    def onUndoROI(self):
+        """Undo the last ROI crop operation."""
+        if not self.roi_history:
+            status_bar = self.statusBar()
+            if status_bar:
+                status_bar.showMessage("No ROI history to undo", 2000)
+            return
+
+        # Save current state to redo stack
+        current_state = self._get_current_roi_state()
+        if current_state:
+            self.roi_redo_stack.append(current_state)
+
+        # Pop and apply previous state
+        previous_state = self.roi_history.pop()
+        offset_x, offset_y, width, height = previous_state
+        if self._apply_roi_state(offset_x, offset_y, width, height):
+            status_bar = self.statusBar()
+            if status_bar:
+                status_bar.showMessage("Undid ROI crop", 2000)
+
+    def onRedoROI(self):
+        """Redo the last undone ROI crop operation."""
+        if not self.roi_redo_stack:
+            status_bar = self.statusBar()
+            if status_bar:
+                status_bar.showMessage("No ROI changes to redo", 2000)
+            return
+
+        # Save current state to history
+        current_state = self._get_current_roi_state()
+        if current_state:
+            self.roi_history.append(current_state)
+
+        # Pop and apply redo state
+        redo_state = self.roi_redo_stack.pop()
+        offset_x, offset_y, width, height = redo_state
+        if self._apply_roi_state(offset_x, offset_y, width, height):
+            status_bar = self.statusBar()
+            if status_bar:
+                status_bar.showMessage("Redid ROI crop", 2000)
 
     def onROISelected(self, offset_x: int, offset_y: int, width: int, height: int):
         """Handle ROI selection from the display widget.
@@ -583,6 +955,7 @@ class MainWindow(QMainWindow):
         )
 
         self.updateCameraLabel()
+        self._sync_pixel_coord_offset()
 
         # if start_stream_on_open
         self.startStopStream()
@@ -720,6 +1093,8 @@ class MainWindow(QMainWindow):
         self.device_properties_act.setIcon(selector.loadIcon("images/imgset.png"))
         self.trigger_mode_act.setIcon(selector.loadIcon("images/triggermode.png"))
         self.shoot_photo_act.setIcon(selector.loadIcon("images/photo.png"))
+        self.power_supply_act.setIcon(selector.loadIcon("images/power.png"))
+        self.rotary_motor_act.setIcon(selector.loadIcon("images/rotary.png"))
 
         # Reload stream icons
         self.stream_play_icon = selector.loadIcon("images/green_play.png")
@@ -763,6 +1138,16 @@ class MainWindow(QMainWindow):
             self.device_selection_dialog.apply_theme()
         if self.settings_dialog is not None and self.settings_dialog.isVisible():
             style_manager.apply_theme(theme)
+        if (
+            self.power_supply_dialog is not None
+            and self.power_supply_dialog.isVisible()
+        ):
+            self.power_supply_dialog.apply_theme()
+        if (
+            self.rotary_motor_dialog is not None
+            and self.rotary_motor_dialog.isVisible()
+        ):
+            self.rotary_motor_dialog.apply_theme()
 
     def onUISettings(self):
         """Open the UI settings dialog"""
@@ -786,6 +1171,93 @@ class MainWindow(QMainWindow):
     def _onSettingsDialogClosed(self):
         """Handle settings dialog closed"""
         self.settings_dialog = None
+
+    # -- Power Supplies -----------------------------------------------------
+
+    def onPowerSupplies(self):
+        """Open or close the power supply dialog."""
+        if (
+            self.power_supply_dialog is not None
+            and self.power_supply_dialog.isVisible()
+        ):
+            self.power_supply_dialog.close()
+            return
+
+        # Scan on first open
+        self.power_supply_manager.scan()
+
+        selector = get_resource_selector()
+        self.power_supply_dialog = PowerSupplyDialog(
+            self.power_supply_manager, parent=self, resource_selector=selector
+        )
+        self.power_supply_dialog.apply_theme()
+        self.power_supply_dialog.finished.connect(self._onPowerSupplyDialogClosed)
+        self.power_supply_act.setChecked(True)
+        self.power_supply_dialog.show()
+
+    def _onPowerSupplyDialogClosed(self):
+        """Handle power supply dialog closed."""
+        self.power_supply_act.setChecked(False)
+        self.power_supply_dialog = None
+
+    def onRotaryMotor(self):
+        """Open or close the rotary motor dialog."""
+        # Create dialog on first use
+        if self.rotary_motor_dialog is None:
+            # Load motor port from settings
+            import json
+
+            settings_path = Path(__file__).parent / "resources" / "settings.json"
+            port = None
+            try:
+                with open(settings_path, "r") as f:
+                    settings = json.load(f)
+                    port = settings.get("rotary_motors", {}).get("port")
+            except Exception:
+                pass
+
+            self.rotary_motor_dialog = RotaryMotorDialog(port=port, parent=self)
+            self.rotary_motor_dialog.apply_theme()
+            self.rotary_motor_dialog.finished.connect(self._onRotaryMotorDialogClosed)
+
+        # Toggle visibility
+        if self.rotary_motor_dialog.isVisible():
+            self.rotary_motor_dialog.hide()
+            self.rotary_motor_act.setChecked(False)
+        else:
+            self.rotary_motor_dialog.show()
+            self.rotary_motor_act.setChecked(True)
+
+    def _onRotaryMotorDialogClosed(self):
+        """Handle rotary motor dialog closed."""
+        self.rotary_motor_act.setChecked(False)
+
+    def onHDRCapture(self):
+        """Open or close the HDR capture dialog."""
+        if self.hdr_dialog is not None and self.hdr_dialog.isVisible():
+            self.hdr_dialog.close()
+            return
+
+        if not self.grabber.is_device_valid:
+            QMessageBox.warning(
+                self,
+                "HDR Capture",
+                "No device selected. Please select a camera first.",
+                QMessageBox.StandardButton.Ok,
+            )
+            self.hdr_act.setChecked(False)
+            return
+
+        self.hdr_dialog = HDRDialog(self.grabber, parent=self)
+        self.hdr_dialog.apply_theme()
+        self.hdr_dialog.finished.connect(self._onHDRDialogClosed)
+        self.hdr_act.setChecked(True)
+        self.hdr_dialog.show()
+
+    def _onHDRDialogClosed(self):
+        """Handle HDR dialog closed."""
+        self.hdr_act.setChecked(False)
+        self.hdr_dialog = None
 
     def startStopStream(self):
         try:

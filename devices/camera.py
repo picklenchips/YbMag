@@ -1,4 +1,4 @@
-"""TODO: camera SDK, and specific camera initialization/acquisition code."""
+"""TODO: this file is no longer necessary, as the camera is now controlled by IC4 SDK classes and fully integrated into the GUI. We can delete this file once we've verified that the new camera control code is working well."""
 
 import numpy as np
 import time, os

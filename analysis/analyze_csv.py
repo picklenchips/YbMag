@@ -1,3 +1,8 @@
+"""
+2/27/26 (Ben) - Simple script to analyze the CSV of pixel intensities. Doesn't do much,
+but a good idea to allow GUI to also load and analyze images in the future.
+"""
+
 import csv
 import os
 
@@ -7,7 +12,7 @@ csv_path = os.path.join(desktop, "full_image_pixels_new.csv")
 
 max_intensity = float("-inf")
 min_intensity = float("inf")
-large_vals=[]
+large_vals = []
 
 with open(csv_path, "r", newline="") as f:
     reader = csv.DictReader(f)
@@ -18,10 +23,9 @@ with open(csv_path, "r", newline="") as f:
                 max_intensity = value
             if value < min_intensity:
                 min_intensity = value
-            #if value < 80:
-                #large_vals.append(value)
-                #print(row)
-            
+            # if value < 80:
+            # large_vals.append(value)
+            # print(row)
         except ValueError:
             continue  # skip rows with non-numeric values
 

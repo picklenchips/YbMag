@@ -1,7 +1,18 @@
 import argparse, os, csv, numpy as np
 import matplotlib.pyplot as plt
 
-INTEN_KEYS = {"intensity","intens","value","gray","grey","luminance","I","mean","val"}
+INTEN_KEYS = {
+    "intensity",
+    "intens",
+    "value",
+    "gray",
+    "grey",
+    "luminance",
+    "I",
+    "mean",
+    "val",
+}
+
 
 def read_csv_auto(path):
     # Try header first
@@ -22,11 +33,14 @@ def read_csv_auto(path):
 
     # Build numeric columns
     cols = list(zip(*rows[start:]))
+
     def to_num(col):
-        out=[]
+        out = []
         for v in col:
-            try: out.append(float(v))
-            except: out.append(np.nan)
+            try:
+                out.append(float(v))
+            except:
+                out.append(np.nan)
         return np.array(out, dtype=float)
 
     num_cols = [to_num(c) for c in cols]
@@ -37,7 +51,8 @@ def read_csv_auto(path):
         for i, name in enumerate(header):
             score = 0
             for k in INTEN_KEYS:
-                if k in name: score += 1
+                if k in name:
+                    score += 1
             # prefer columns that are mostly numeric
             numeric_frac = np.isfinite(num_cols[i]).mean()
             score += numeric_frac
@@ -55,7 +70,11 @@ def read_csv_auto(path):
 
     return inten
 
+
 def metrics(inten):
+    """Compute metrics for a 1-D array of intensity values, ignoring non-finite values.
+    Returns a dict with count, min, max, mean, std, percentiles, and dynamic range in dB.
+    """
     x = inten.astype(float)
     finite = x[np.isfinite(x)]
     if finite.size == 0:
@@ -63,20 +82,37 @@ def metrics(inten):
     cnt = finite.size
     mn, mx = float(np.min(finite)), float(np.max(finite))
     mean, std = float(np.mean(finite)), float(np.std(finite))
-    p1,p5,p25,p50,p75,p95,p99 = np.percentile(finite,[1,5,25,50,75,95,99])
-    pos = finite[finite>0]
-    dr_db = float(20*np.log10(pos.max()/pos.min())) if pos.size else 0.0
-    return dict(count=cnt,min=mn,max=mx,mean=mean,std=std,
-                p1=float(p1),p5=float(p5),p25=float(p25),p50=float(p50),
-                p75=float(p75),p95=float(p95),p99=float(p99),dyn_range_db=dr_db,
-                intensities=finite)
+    p1, p5, p25, p50, p75, p95, p99 = np.percentile(finite, [1, 5, 25, 50, 75, 95, 99])
+    pos = finite[finite > 0]
+    dr_db = float(20 * np.log10(pos.max() / pos.min())) if pos.size else 0.0
+    return dict(
+        count=cnt,
+        min=mn,
+        max=mx,
+        mean=mean,
+        std=std,
+        p1=float(p1),
+        p5=float(p5),
+        p25=float(p25),
+        p50=float(p50),
+        p75=float(p75),
+        p95=float(p95),
+        p99=float(p99),
+        dyn_range_db=dr_db,
+        intensities=finite,
+    )
+
 
 def save_hist(intens, out_png):
     plt.figure()
     plt.hist(intens, bins=256)
     plt.title("Intensity histogram")
-    plt.xlabel("value"); plt.ylabel("count")
-    plt.tight_layout(); plt.savefig(out_png, dpi=120); plt.close()
+    plt.xlabel("value")
+    plt.ylabel("count")
+    plt.tight_layout()
+    plt.savefig(out_png, dpi=120)
+    plt.close()
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -86,12 +122,34 @@ def main():
     os.makedirs(args.outdir, exist_ok=True)
     inten = read_csv_auto(args.csv)
     res = metrics(inten)
+    if res is None:
+        print("No valid intensity data found.")
+        return
     print(f"[auto] {args.csv}")
-    for k in ["count","min","max","mean","std","p1","p5","p25","p50","p75","p95","p99","dyn_range_db"]:
-        print(f"{k:>12}: {res[k]:.6g}" if isinstance(res[k], float) else f"{k:>12}: {res[k]}")
+    for k in [
+        "count",
+        "min",
+        "max",
+        "mean",
+        "std",
+        "p1",
+        "p5",
+        "p25",
+        "p50",
+        "p75",
+        "p95",
+        "p99",
+        "dyn_range_db",
+    ]:
+        print(
+            f"{k:>12}: {res[k]:.6g}"
+            if isinstance(res[k], float)
+            else f"{k:>12}: {res[k]}"
+        )
     out_png = os.path.join(args.outdir, "histogram.png")
     save_hist(res["intensities"], out_png)
     print(f"Saved {out_png}")
+
 
 if __name__ == "__main__":
     main()

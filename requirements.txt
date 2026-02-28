@@ -4,7 +4,10 @@ numpy
 opencv-python  # image analysis
 imagingcontrol4  # camera control
 pyqt6  # GUI
+PyOpenGL  # OpenGL bindings for ROI overlay rendering
 # other connections
 pythonnet  # Elliptic Motor
+pyvisa  # VISA instrument control (Rigol DC supplies)
+pyvisa-py  # pure-Python VISA backend (no NI-VISA needed)
 # simulation
 qutip  # mesolve

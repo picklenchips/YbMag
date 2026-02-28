@@ -1,7 +1,13 @@
+"""
+2/27/26 (Ben) - Will need to re-write this as an export widget with the PyQt GUI.
+Seems like `export_widget` function is only useful one.
+"""
+
 # export_pixels_widget.py  (fixed)
 import os, numpy as np, napari
 from magicgui import magicgui
 from magicgui.widgets import FileEdit
+
 
 def _get_active_image_data(viewer):
     layer = viewer.layers.selection.active
@@ -10,9 +16,11 @@ def _get_active_image_data(viewer):
     scale = tuple(getattr(layer, "scale", (1.0, 1.0)))
     return np.asarray(layer.data), (layer.name or "image"), scale
 
+
 def _default_filename(layer_name: str, fmt: str) -> str:
     base = layer_name.replace(" ", "_") or "image"
     return base + ("_pixels.csv" if fmt == "triplets" else "_matrix.csv")
+
 
 @magicgui(
     call_button="Export CSV",
@@ -22,8 +30,8 @@ def _default_filename(layer_name: str, fmt: str) -> str:
     use_physical={"label": "Use layer.scale for x,y"},
     output_path={
         "label": "Save as",
-        "widget_type": FileEdit,   
-        "mode": "w",               # write mode allowed here
+        "widget_type": FileEdit,
+        "mode": "w",  # write mode allowed here
         "filter": "*.csv",
     },
 )
@@ -33,7 +41,7 @@ def export_widget(
     grayscale: bool = True,
     normalize: bool = False,
     use_physical: bool = False,
-    output_path: str = "",        # FileEdit returns a str path
+    output_path: str = "",  # FileEdit returns a str path
 ):
     try:
         data, lname, scale = _get_active_image_data(viewer)
@@ -41,7 +49,7 @@ def export_widget(
         # greyscale rgb calculation
         if grayscale and data.ndim == 3 and data.shape[-1] >= 3:
             R, G, B = data[..., 0], data[..., 1], data[..., 2]
-            data = 0.299*R + 0.587*G + 0.114*B
+            data = 0.299 * R + 0.587 * G + 0.114 * B
 
         if data.ndim != 2:
             raise RuntimeError("Only 2-D images supported (convert stacks first).")
@@ -49,7 +57,7 @@ def export_widget(
         A = data.astype(float, copy=False)
         if normalize:
             vmin, vmax = float(A.min()), float(A.max())
-            A = (A - vmin)/(vmax - vmin) if vmax > vmin else np.zeros_like(A)
+            A = (A - vmin) / (vmax - vmin) if vmax > vmin else np.zeros_like(A)
 
         if not output_path:
             output_path = os.path.abspath(_default_filename(lname, format))
@@ -69,12 +77,14 @@ def export_widget(
                 x = x * sx
                 y = y * sy
                 header = "x(phys),y(phys),intensity"
-                fmts = ["%.6g","%.6g","%.6g"]
+                fmts = ["%.6g", "%.6g", "%.6g"]
             else:
                 header = "x,y,intensity"
-                fmts = ["%d","%d","%.6g"]
+                fmts = ["%d", "%d", "%.6g"]
             arr = np.column_stack([x.ravel(), y.ravel(), A.ravel()])
-            np.savetxt(output_path, arr, delimiter=",", fmt=fmts, header=header, comments="")
+            np.savetxt(
+                output_path, arr, delimiter=",", fmt=fmts, header=header, comments=""
+            )
 
         print(f"✅ Saved → {output_path}")
         viewer.status = f"Saved CSV: {output_path}"
@@ -83,8 +93,12 @@ def export_widget(
         print("⚠️", msg)
         viewer.status = msg
 
+
 def _install(viewer: napari.Viewer):
-    viewer.window.add_dock_widget(export_widget, area="right", name="Export Pixels to CSV")
+    viewer.window.add_dock_widget(
+        export_widget, area="right", name="Export Pixels to CSV"
+    )
+
     # Prefill filename when layer changes
     @viewer.layers.selection.events.active.connect
     def _on_active(_=None):
@@ -95,6 +109,7 @@ def _install(viewer: napari.Viewer):
             )
         except Exception:
             pass
+
     # initialize once
     try:
         _, lname, _ = _get_active_image_data(viewer)
@@ -103,6 +118,7 @@ def _install(viewer: napari.Viewer):
         )
     except Exception:
         pass
+
 
 if __name__ == "__main__":
     v = napari.Viewer()

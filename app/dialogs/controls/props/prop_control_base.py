@@ -4,7 +4,7 @@ Translated from C++ PropControlBase.h
 """
 
 from PyQt6.QtCore import QEvent, QTime, QTimer
-from PyQt6.QtWidgets import QWidget, QHBoxLayout
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QApplication, QSizePolicy
 from typing import Callable, Optional, Any
 from dataclasses import dataclass
 
@@ -47,16 +47,22 @@ class PropControlBase(QWidget):
         self._is_destroyed = False  # Flag to track if widget is being destroyed
 
         self.setLayout(QHBoxLayout(self))
+        # Set widget to expand horizontally to fill available space
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         if layout := self.layout():
-            layout.setSpacing(4)
-            layout.setContentsMargins(8, 7, 0, 7)
+            layout.setSpacing(2)
+            layout.setContentsMargins(
+                2, 4, 0, 4
+            )  # Minimal margins to let widgets stretch
 
+        # set up timer for delayed updates
         self.prev_update = QTime.currentTime()
         self.final_update = QTimer()
         self.final_update.setSingleShot(True)
         self.final_update.setInterval(100)
         self.final_update.timeout.connect(self._on_final_update_timeout)
 
+        # Callbacks that can be registered by subclasses or external code
         self.restart_filter_func: Optional[StreamRestartFilterFunction] = None
         self.prop_selected_func: Optional[PropSelectedFunction] = None
 
@@ -212,8 +218,6 @@ class PropControlBase(QWidget):
             return
 
         try:
-            from PyQt6.QtWidgets import QApplication
-
             QApplication.removePostedEvents(self, PropControlBase.UPDATE_ALL)
             QApplication.postEvent(self, QEvent(PropControlBase.UPDATE_ALL))
         except RuntimeError:

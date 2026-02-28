@@ -3,13 +3,12 @@ Property tree widget
 Translated from C++ PropertyTreeWidget.h/cpp
 """
 
-from PyQt6.QtCore import Qt, QRect, QModelIndex, QItemSelection
+from PyQt6.QtCore import Qt, QRect, QModelIndex, QItemSelection, QSize
 from PyQt6.QtWidgets import (
     QWidget,
     QTreeView,
     QVBoxLayout,
     QHBoxLayout,
-    QComboBox,
     QLineEdit,
     QFrame,
     QStyledItemDelegate,
@@ -86,9 +85,21 @@ class PropertyTreeItemDelegate(QStyledItemDelegate):
         )
 
         if widget:
-            widget.setContentsMargins(0, 0, 8, 0)
+            widget.setContentsMargins(0, 0, 2, 0)  # Minimal right margin
+            # Ensure widget expands to fill available width
+            from PyQt6.QtWidgets import QSizePolicy
+
+            widget.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            )
 
         return widget
+
+    def sizeHint(self, option, index) -> QSize:
+        """Return appropriate size for editor widgets (especially compound controls)"""
+        # Return fixed height only; width is handled by size policy expansion
+        # Widgets are set to QSizePolicy.Expanding which makes them stretch to fill
+        return QSize(0, 48)  # Width of 0 lets the widget use its expanding policy
 
 
 class TestItemDelegateForPaint(QStyledItemDelegate):
@@ -175,7 +186,6 @@ class PropertyTreeWidgetSettings:
     show_info_box: bool = True
     show_filter: bool = True
     initial_filter: str = ""
-    initial_visibility: PropertyVisibility = PropertyVisibility.BEGINNER
     stream_restart_filter: Optional[StreamRestartFilterFunction] = None
 
 
@@ -209,8 +219,8 @@ class PropertyTreeWidget(QWidget):
             self.info_text_ = PropertyInfoBox(self)
 
         # Create delegates
-        prop_selected_func = (
-            (lambda prop: self.info_text_.update(prop)) if self.info_text_ else None
+        prop_selected_func = lambda prop: (
+            self.info_text_.update(prop) if self.info_text_ else None
         )
         self.delegate_ = PropertyTreeItemDelegate(
             self.proxy_, grabber, settings.stream_restart_filter, prop_selected_func
@@ -221,24 +231,11 @@ class PropertyTreeWidget(QWidget):
         frame = QFrame(self)
         layout = QVBoxLayout(frame)
 
-        # Visibility combo and filter
-        self.visibility_combo_ = None
+        # Filter
         self.filter_text_ = None
 
         if settings.show_filter:
             top = QHBoxLayout()
-
-            self.visibility_combo_ = QComboBox()
-            self.visibility_combo_.addItem("Beginner", int(PropertyVisibility.BEGINNER))
-            self.visibility_combo_.addItem("Expert", int(PropertyVisibility.EXPERT))
-            self.visibility_combo_.addItem("Guru", int(PropertyVisibility.GURU))
-            self.visibility_combo_.setCurrentIndex(int(settings.initial_visibility))
-            self.visibility_combo_.setMinimumWidth(200)
-            self.visibility_combo_.setStyleSheet("QComboBox { font-size: 13px; }")
-            self.visibility_combo_.currentIndexChanged.connect(
-                lambda _: self._update_visibility()
-            )
-            top.addWidget(self.visibility_combo_)
 
             self.filter_text_ = QLineEdit()
             self.filter_text_.setStyleSheet("QLineEdit { font-size: 13px; }")
@@ -255,17 +252,17 @@ class PropertyTreeWidget(QWidget):
                 )
             )
 
-            self.filter_text_.textChanged.connect(lambda _: self._update_visibility())
+            self.filter_text_.textChanged.connect(lambda _: self._update_filter())
             top.addWidget(self.filter_text_)
 
             layout.addLayout(top)
-            self._update_visibility()
+            self._update_filter()
 
         # Create tree view
         self.view_ = PropertyTreeView(self.proxy_)
         self.view_.setStyleSheet(PROPERTY_TREE_VIEW_STYLE)
         self.proxy_.setSourceModel(self.source_)
-        self.proxy_.filter(settings.initial_filter, settings.initial_visibility)
+        self.proxy_.filter(settings.initial_filter, PropertyVisibility.GURU)
 
         self.view_.setModel(self.proxy_)
         self.view_.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -276,6 +273,10 @@ class PropertyTreeWidget(QWidget):
             header.setStretchLastSection(True)
         self.view_.setItemDelegateForColumn(0, self.branch_paint_delegate_)
         self.view_.setItemDelegateForColumn(1, self.delegate_)
+
+        # Set uniform row height to accommodate editors
+        # Delegate's sizeHint() will determine the actual row height
+        self.view_.setUniformRowHeights(True)
 
         # Connect signals
         self.view_.clicked.connect(self._prop_selected)
@@ -306,14 +307,10 @@ class PropertyTreeWidget(QWidget):
 
     # -- Private helpers matching C++ --
 
-    def _update_visibility(self):
-        """Read visibility combo and filter text, then update proxy"""
-        if self.visibility_combo_:
-            vis = PropertyVisibility(self.visibility_combo_.currentData())
-        else:
-            vis = PropertyVisibility.GURU
+    def _update_filter(self):
+        """Read filter text and update proxy"""
         text = self.filter_text_.text() if self.filter_text_ else ""
-        self.proxy_.filter(text, vis)
+        self.proxy_.filter(text, PropertyVisibility.GURU)
 
     def _create_all_editors(self, model, parent: QModelIndex):
         """Recursively open persistent editors on column 1 for all rows"""
@@ -360,8 +357,6 @@ class PropertyTreeWidget(QWidget):
 
         if self.info_text_:
             self.info_text_.setEnabled(source_available)
-        if self.visibility_combo_:
-            self.visibility_combo_.setEnabled(source_available)
         if self.filter_text_:
             self.filter_text_.setEnabled(source_available)
         self.view_.setEnabled(source_available)
@@ -393,11 +388,19 @@ class PropertyTreeWidget(QWidget):
 
     def _update_model_internal(self, model: Optional[PropertyTreeModel]):
         """Replace the source model"""
+        # Close persistent editors first so their Property / QModelIndex refs
+        # are released before the model is swapped out.
+        self._close_all_editors(self.proxy_, self.view_.rootIndex())
+
         old_model = self.source_
         self.source_ = model
         self.proxy_.setSourceModel(self.source_)
         self._update_view()
-        # old_model will be GC'd in Python
+
+        # Explicitly clear old model to break parent<->children reference
+        # cycles in PropertyTreeNode and release IC4 property handles.
+        if old_model is not None:
+            old_model.clear()
 
     def update_grabber(self, grabber: Optional[Grabber]):
         """Update with a new grabber - matches C++ updateGrabber"""
@@ -416,17 +419,21 @@ class PropertyTreeWidget(QWidget):
         """Set a custom filter function"""
         self.proxy_.filter_func(accept_prop)
 
-    def set_prop_visibility(self, visibility: PropertyVisibility):
-        """Set visibility filter"""
-        if self.visibility_combo_:
-            self.visibility_combo_.setCurrentIndex(int(visibility))
-            self._update_visibility()
-
     def set_filter_text(self, filter_text: str):
         """Set filter text"""
         if self.filter_text_:
             self.filter_text_.setText(filter_text)
-            self._update_visibility()
+            self._update_filter()
+
+    def _close_all_editors(self, model, parent: QModelIndex):
+        """Recursively close persistent editors on column 1 for all rows"""
+        rows = model.rowCount(parent)
+        for row in range(rows):
+            index1 = model.index(row, 1, parent)
+            self.view_.closePersistentEditor(index1)
+
+            index0 = model.index(row, 0, parent)
+            self._close_all_editors(model, index0)
 
     def closeEvent(self, event):
         """Clean up when widget is closed"""

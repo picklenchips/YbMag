@@ -41,7 +41,10 @@ class FormattingDoubleSpinBox(QDoubleSpinBox):
     def _on_editing_finished(self):
         if self.isReadOnly():
             return
-        text = self.lineEdit().text()
+        line_edit = self.lineEdit()
+        if line_edit is None:
+            return
+        text = line_edit.text()
         try:
             val = self.valueFromText(text)
             self.setValue(val)
@@ -97,28 +100,26 @@ class PropFloatControl(PropControlBase):
         rep_name = str(self.representation_).upper() if self.representation_ else ""
 
         # Create controls based on representation (matches C++ switch)
-        if "PURENUMBER" in rep_name or "PURE_NUMBER" in rep_name:
-            self.spin = FormattingDoubleSpinBox(self, self.notation_, self.precision_)
-        elif "LINEAR" in rep_name:
-            if not is_readonly:
-                self.slider = QSlider(Qt.Orientation.Horizontal, self)
-            self.spin = FormattingDoubleSpinBox(self, self.notation_, self.precision_)
-        elif "LOGARITHMIC" in rep_name:
-            if not is_readonly:
-                self.slider = QSlider(Qt.Orientation.Horizontal, self)
-            self.spin = FormattingDoubleSpinBox(self, self.notation_, self.precision_)
+        if not is_readonly:
+            self.slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.spin = FormattingDoubleSpinBox(self, self.notation_, self.precision_)
+        if "LOGARITHMIC" in rep_name:
             self.spin.setStepType(QAbstractSpinBox.StepType.AdaptiveDecimalStepType)
-        else:
-            # Default
-            self.spin = FormattingDoubleSpinBox(self, self.notation_, self.precision_)
 
         if self.slider:
+            self.slider.setMinimumHeight(20)
             self.slider.valueChanged.connect(self._slider_moved)
+            # Set slider to expand horizontally
+            from PyQt6.QtWidgets import QSizePolicy
+
+            self.slider.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
         if self.spin:
             self.spin.setKeyboardTracking(False)
             self.spin.setDecimals(3)
             self.spin.valueChanged.connect(self._spin_value_changed)
-            self.spin.setMinimumWidth(120)
+            self.spin.setMinimumWidth(80)
             try:
                 unit = prop.unit
                 if unit:
@@ -131,8 +132,17 @@ class PropFloatControl(PropControlBase):
         if layout := self.layout():
             if self.slider:
                 layout.addWidget(self.slider)
+                # setStretchFactor requires QBoxLayout cast
+                from PyQt6.QtWidgets import QBoxLayout
+
+                if isinstance(layout, QBoxLayout):
+                    layout.setStretchFactor(self.slider, 1)
             if self.spin:
                 layout.addWidget(self.spin)
+                from PyQt6.QtWidgets import QBoxLayout
+
+                if isinstance(layout, QBoxLayout):
+                    layout.setStretchFactor(self.spin, 0)
 
     @staticmethod
     def text_from_value(value: float, notation=None, precision: int = 6) -> str:

@@ -28,8 +28,9 @@ class PropBooleanControl(PropControlBase):
 
         self.update_all()
         if layout := self.layout():
-            layout.addWidget(self.check)
-            layout.setContentsMargins(8, 8, 0, 8)
+            layout.addWidget(self.check, 0)  # Don't stretch checkbox
+
+        self.check.installEventFilter(self)
 
     def _on_check_changed(self, state: int):
         """Handle checkbox state change"""

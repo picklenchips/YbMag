@@ -107,15 +107,62 @@ class StyleManager:
             qss = qss.replace(f"{{{{{key}}}}}", value)
         return qss
 
+    def _build_palette(self, theme: str) -> QPalette:
+        colors = self._theme_colors(theme)
+        palette = QPalette()
+
+        window = QColor(colors["BG_MAIN"])
+        surface = QColor(colors["BG_SURFACE"])
+        alt = QColor(colors["BG_ALT"])
+        text = QColor(colors["TEXT"])
+        border = QColor(colors["BORDER"])
+        border_strong = QColor(colors["BORDER_STRONG"])
+        accent = QColor(colors["ACCENT"])
+        selection_bg = QColor(colors["SELECTION_BG"])
+        selection_text = QColor(colors["SELECTION_TEXT"])
+
+        palette.setColor(QPalette.ColorRole.Window, window)
+        palette.setColor(QPalette.ColorRole.Base, surface)
+        palette.setColor(QPalette.ColorRole.AlternateBase, alt)
+        palette.setColor(QPalette.ColorRole.ToolTipBase, surface)
+        palette.setColor(QPalette.ColorRole.ToolTipText, text)
+        palette.setColor(QPalette.ColorRole.Text, text)
+        palette.setColor(QPalette.ColorRole.WindowText, text)
+        palette.setColor(QPalette.ColorRole.Button, surface)
+        palette.setColor(QPalette.ColorRole.ButtonText, text)
+        palette.setColor(QPalette.ColorRole.BrightText, text)
+        palette.setColor(QPalette.ColorRole.Highlight, selection_bg)
+        palette.setColor(QPalette.ColorRole.HighlightedText, selection_text)
+        palette.setColor(QPalette.ColorRole.Link, accent)
+        palette.setColor(QPalette.ColorRole.Midlight, border)
+        palette.setColor(QPalette.ColorRole.Mid, border_strong)
+
+        disabled_text = QColor(text)
+        disabled_text.setAlpha(140)
+        palette.setColor(
+            QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, disabled_text
+        )
+        palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.WindowText,
+            disabled_text,
+        )
+        palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.ButtonText,
+            disabled_text,
+        )
+
+        return palette
+
     def apply_theme(self, mode: Optional[ThemeMode] = None) -> None:
         theme = self._resolve_theme(mode)
         qss_text = self._build_qss(theme)
-        if self._current_theme == theme and self._last_applied_qss == qss_text:
-            return
 
         app = QApplication.instance()
         if app:
             assert isinstance(app, QApplication), "Expected QApplication instance"
+            app.setPalette(self._build_palette(theme))
             app.setStyleSheet(qss_text)
             self._current_theme = theme
             self._last_applied_qss = qss_text

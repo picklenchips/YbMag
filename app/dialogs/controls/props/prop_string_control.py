@@ -55,6 +55,12 @@ class PropStringControl(PropControlBase):
         self.edit.setReadOnly(prop.is_readonly)
         self.edit.editingFinished.connect(self._set_value)
         self.edit.set_escape_callback(self._update_value)
+        # Set edit to expand horizontally
+        from PyQt6.QtWidgets import QSizePolicy
+
+        self.edit.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
 
         if max_length is not None:
             self.edit.setMaxLength(int(max_length))
@@ -63,6 +69,12 @@ class PropStringControl(PropControlBase):
 
         if layout := self.layout():
             layout.addWidget(self.edit)
+            from PyQt6.QtWidgets import QBoxLayout
+
+            if isinstance(layout, QBoxLayout):
+                layout.setStretchFactor(self.edit, 1)  # Stretch to fill width
+
+        self.edit.installEventFilter(self)
 
     def _set_value(self):
         """Handle editing finished (matches C++ set_value)"""

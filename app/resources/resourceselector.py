@@ -2,6 +2,7 @@ from PyQt6.QtGui import QPalette, QIcon
 from pathlib import Path
 from typing import Literal
 from datetime import datetime
+import json
 
 # Global instance
 _resource_selector_instance = None
@@ -30,11 +31,23 @@ def _is_dark_mode() -> bool:
 
 class ResourceSelector:
 
+    # Keys used in the JSON settings file
+    _KEY_THEME = "theme"
+    _KEY_TABBED = "tabbed_properties"
+
     def __init__(self):
         # Get the directory of this script (resourceselector.py)
         self.base_dir = Path(__file__).parent
-        # Theme mode: 'auto', 'light', or 'dark'
+
+        # Settings file lives alongside this script in the resources folder
+        self._settings_path = self.base_dir / "settings.json"
+
+        # Defaults
         self._theme_mode: Literal["auto", "light", "dark"] = "auto"
+        self._tabbed_properties: bool = True
+
+        # Load persisted values (if any)
+        self._load()
         self._update_theme()
 
     def _update_theme(self):
@@ -44,6 +57,32 @@ class ResourceSelector:
         else:
             self.theme = f"theme_{self._theme_mode}"
 
+    # ── Persistence ──────────────────────────────────────────────
+
+    def _load(self):
+        """Load settings from the JSON file (silently keeps defaults on error)."""
+        try:
+            data = json.loads(self._settings_path.read_text(encoding="utf-8"))
+            if data.get(self._KEY_THEME) in ("auto", "light", "dark"):
+                self._theme_mode = data[self._KEY_THEME]
+            if isinstance(data.get(self._KEY_TABBED), bool):
+                self._tabbed_properties = data[self._KEY_TABBED]
+        except Exception:
+            pass
+
+    def _save(self):
+        """Write current settings to the JSON file."""
+        data = {
+            self._KEY_THEME: self._theme_mode,
+            self._KEY_TABBED: self._tabbed_properties,
+        }
+        try:
+            self._settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    # ── Accessors ────────────────────────────────────────────────
+
     def set_theme(self, mode: Literal["auto", "light", "dark"]):
         """Set the theme mode"""
         if mode not in ("auto", "light", "dark"):
@@ -52,10 +91,20 @@ class ResourceSelector:
             )
         self._theme_mode = mode
         self._update_theme()
+        self._save()
 
     def get_theme(self) -> Literal["auto", "light", "dark"]:
         """Get the current theme mode"""
         return self._theme_mode
+
+    def set_tabbed_properties(self, enabled: bool):
+        """Set whether to use the tabbed property dialog layout."""
+        self._tabbed_properties = enabled
+        self._save()
+
+    def get_tabbed_properties(self) -> bool:
+        """Return True if the tabbed property dialog layout is active."""
+        return self._tabbed_properties
 
     def select(self, item: str) -> str:
         # Construct path relative to this script's location with theme directory

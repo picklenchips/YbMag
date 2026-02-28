@@ -202,11 +202,28 @@ class PropIntegerControl(PropControlBase):
 
         self.update_all()
 
+        if self.slider:
+            self.slider.setMinimumHeight(20)
+            # Set slider to expand horizontally
+            from PyQt6.QtWidgets import QSizePolicy
+
+            self.slider.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
+        if self.spin:
+            self.spin.setMinimumWidth(80)
+
         if layout := self.layout():
+            from PyQt6.QtWidgets import QBoxLayout
+
             if self.slider:
                 layout.addWidget(self.slider)
+                if isinstance(layout, QBoxLayout):
+                    layout.setStretchFactor(self.slider, 1)
             if self.spin:
                 layout.addWidget(self.spin)
+                if isinstance(layout, QBoxLayout):
+                    layout.setStretchFactor(self.spin, 0)
             if self.edit:
                 layout.addWidget(self.edit)
 

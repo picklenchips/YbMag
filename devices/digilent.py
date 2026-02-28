@@ -6,7 +6,7 @@ import ctypes
 import os
 
 
-class DigilentController:
+class Digilent:
     """
     Digilent device control using the Digilent Waveforms SDK.
     """
@@ -27,7 +27,7 @@ class DigilentController:
         self.dwf.FDwfDeviceOpen(ctypes.c_int(-1), ctypes.byref(self.hdwf))
         if self.hdwf.value == 0:
             raise RuntimeError("Digilent not found")
-        self.connected = True 
+        self.connected = True
         return True
 
     def configure(self, pulse_width, repetition_rate):

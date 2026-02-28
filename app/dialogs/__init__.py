@@ -6,5 +6,15 @@ Translated from C++ qt6-dialogs implementation
 from .property_dialog import PropertyDialog
 from .device_selection_dialog import DeviceSelectionDialog
 from .settings_dialog import SettingsDialog
+from .power_supply_dialog import PowerSupplyDialog
+from .hdr_dialog import HDRDialog
+from .rotary_motor import RotaryMotorDialog
 
-__all__ = ["PropertyDialog", "DeviceSelectionDialog", "SettingsDialog"]
+__all__ = [
+    "PropertyDialog",
+    "DeviceSelectionDialog",
+    "SettingsDialog",
+    "PowerSupplyDialog",
+    "HDRDialog",
+    "RotaryMotorDialog",
+]

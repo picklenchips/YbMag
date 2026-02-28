@@ -15,7 +15,7 @@ ELLO_DLL_PATH = r"C:\Program Files\Thorlabs\Elliptec\Thorlabs.Elliptec.ELLO_DLL.
 if not __import__("os").path.exists(ELLO_DLL_PATH):
     raise FileNotFoundError(f"ELLO DLL not found at: {ELLO_DLL_PATH}")
 
-clr.AddReference(ELLO_DLL_PATH)
+clr.AddReference(ELLO_DLL_PATH)  # type: ignore
 
 from System import Decimal as NetDecimal  # type: ignore
 from System.IO.Ports import SerialPort  # For COM port detection  # type: ignore
@@ -841,6 +841,95 @@ class ELLMotor:
 
 
 if __name__ == "__main__":
+    print("=" * 70)
+    print("Elliptec Motor Control Example using ELLMotor")
+    print("=" * 70)
+    print()
+
+    # Connect to motor - now using integrated ELLMotor.scan_and_connect()
+    motor = ELLMotor(verbose=True)
+    print(f"Connection: {motor}\n")
+
+    # Display device information
+    motor.print_device_info()
+    print()
+
+    # Query current state
+    print("Querying device state...")
+    motor.get_position()
+    motor.get_home_offset()
+    motor.get_jog_step_size()
+    print(f"Position:        {motor.position:.2f}")
+    print(f"Home Offset:     {motor.home_offset:.2f}")
+    print(f"Jog Step Size:   {motor.jog_step_size:.2f}\n")
+    while 1:
+        t = (
+            input(
+                "Enter 'j' to jog forward, 'k' to jog backward, 'm' to move absolute, 'r' to move relative, 'i' for motor info, 's' to set step size, 'q' to quit: "
+            )
+            .strip()
+            .lower()
+        )
+        if t == "j":
+            print("Jogging forward...")
+            if motor.jog_forward():
+                motor.get_position()
+                print(f"   ✓ New position: {motor.position:.2f}\n")
+            else:
+                print("   ✗ Jog failed\n")
+        elif t == "k":
+            print("Jogging backward...")
+            if motor.jog_backward():
+                motor.get_position()
+                print(f"   ✓ New position: {motor.position:.2f}\n")
+            else:
+                print("   ✗ Jog failed\n")
+        elif t == "m":
+            try:
+                pos = float(input("Enter absolute position to move to: "))
+                print(f"Moving to absolute position {pos}...")
+                if motor.move_absolute(pos):
+                    motor.get_position()
+                    print(f"   ✓ Moved to position: {motor.position:.2f}\n")
+                else:
+                    print("   ✗ Move failed\n")
+            except ValueError:
+                print("Invalid input. Please enter a numeric value.\n")
+        elif t == "r":
+            try:
+                delta = float(
+                    input("Enter relative distance to move (positive or negative): ")
+                )
+                print(f"Moving relative by {delta}...")
+                if motor.move_relative(delta):
+                    motor.get_position()
+                    print(f"   ✓ New position: {motor.position:.2f}\n")
+                else:
+                    print("   ✗ Move failed\n")
+            except ValueError:
+                print("Invalid input. Please enter a numeric value.\n")
+        elif t == "i":
+            if motor.motor_count > 1:
+                for motor_id in ["1", "2"]:
+                    motor.print_motor_info(int(motor_id))
+            else:
+                print("Single-motor device, no additional motor info available.\n")
+        elif t == "s":
+            try:
+                step = float(input("Enter new jog step size: "))
+                motor.jog_step_size = step
+                print(f"Jog step size set to {motor.jog_step_size:.2f}\n")
+            except ValueError:
+                print("Invalid input. Please enter a numeric value.\n")
+        elif t == "q":
+            print("Exiting demonstration...\n")
+            motor.disconnect()
+            break
+        else:
+            print(
+                "Invalid command. Please enter 'j', 'k', 'm', 'r', 'i', 's', or 'q'.\n"
+            )
+
     # Example usage
     print("=" * 70)
     print("ELLMotor - Thorlabs Elliptec Motor Control")
@@ -873,9 +962,7 @@ if __name__ == "__main__":
     thread.start()
     cancel_input = input("Press Enter to cancel cleaning...\n")
     if cancel_input == "":
-        print(
-            "Cancelled cleaning. Device will continue cleaning in background. You can check status later."
-        )
+        print("Cancelled cleaning.")
         motor.stop_cleaning()
     # look at potentially different values after cleaning/optimization
     thread.join()  # Wait for cleaning to finish before querying info again

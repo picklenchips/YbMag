@@ -1,19 +1,25 @@
 """
-Property dialog for viewing and editing device properties
-Translated from C++ PropertyDialog.h/cpp
+Property dialog for viewing and editing device properties.
+
+Supports two layouts controlled by the *tabbed* flag:
+  - Tabbed (default): each top-level category gets its own tab, with a global
+    search bar and shared info box.
+  - Classic: a single property tree with an integrated search bar and info box.
 """
 
 from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
+    QApplication,
     QVBoxLayout,
-    QWidget,
     QTabWidget,
+    QWidget,
 )
 from typing import Optional, Union, Dict
 
 from imagingcontrol4.grabber import Grabber
-from imagingcontrol4.properties import PropertyMap, PropertyVisibility, PropCategory
+from imagingcontrol4.properties import PropertyMap
+from .controls.tabbed_property_widget import TabbedPropertyWidget
 from .controls.property_tree_widget import (
     PropertyTreeWidget,
     PropertyTreeWidgetSettings,
@@ -23,7 +29,7 @@ from resources.style_manager import get_style_manager
 
 
 class PropertyDialog(QDialog):
-    """Dialog for viewing and adjusting device properties"""
+    """Dialog for viewing and adjusting device properties."""
 
     def __init__(
         self,
@@ -32,111 +38,123 @@ class PropertyDialog(QDialog):
         title: str = "",
         additional_maps: Optional[Dict[str, PropertyMap]] = None,
         resource_selector=None,
+        tabbed: bool = True,
     ):
         super().__init__(parent)
-
         self.setWindowTitle(title)
 
-        # Determine if we have a grabber or property map
         if isinstance(obj, Grabber):
-            self._grabber = obj
-            self._map = obj.device_property_map
+            self._grabber: Optional[Grabber] = obj
+            self._map: Optional[PropertyMap] = obj.device_property_map
         else:
             self._grabber = None
             self._map = obj
 
-        # Store additional property maps (e.g., for codec settings)
         self.additional_maps = additional_maps or {}
         self.resource_selector = resource_selector
-
-        # Store tree widgets for each property map
-        self._trees: Dict[str, PropertyTreeWidget] = {}
+        self._tabbed = tabbed
+        self._extra_trees: list[PropertyTreeWidget] = []
 
         self._create_ui()
 
     def _create_ui(self):
-        """Create the dialog UI"""
         self.setMinimumSize(500, 700)
+        layout = QVBoxLayout(self)
 
-        main_layout = QVBoxLayout()
+        assert self._map is not None
 
-        # Create property tree widget for main property map
-        primary_tree = self._create_tree_widget(self._map, "Root", self._grabber)
-
-        if primary_tree:
-            self._tree = primary_tree
-            self._trees["Properties"] = primary_tree
-
-            # If there are additional maps, create a tab widget
-            if self.additional_maps:
-                tab_widget = QTabWidget()
-                tab_widget.addTab(primary_tree, "Properties")
-
-                for tab_name, prop_map in self.additional_maps.items():
-                    additional_tree = self._create_tree_widget(prop_map, "Root", None)
-                    if additional_tree:
-                        tab_widget.addTab(additional_tree, tab_name)
-                        self._trees[tab_name] = additional_tree
-
-                main_layout.addWidget(tab_widget)
-            else:
-                main_layout.addWidget(primary_tree)
+        if self._tabbed:
+            self._widget: Union[TabbedPropertyWidget, PropertyTreeWidget] = (
+                TabbedPropertyWidget(
+                    property_map=self._map,
+                    grabber=self._grabber,
+                    additional_maps=self.additional_maps,
+                    parent=self,
+                )
+            )
+            layout.addWidget(self._widget)
         else:
-            self._tree = None
+            root = self._map.find_category("Root")
+            settings = PropertyTreeWidgetSettings(
+                show_root_item=False,
+                show_info_box=True,
+                show_filter=True,
+            )
+            primary = PropertyTreeWidget(root, self._grabber, settings, self)
+            self._widget = primary
 
-        # Close button (matches C++ QDialogButtonBox::Close)
+            if self.additional_maps:
+                # Wrap in tabs so additional maps (e.g. Codec Settings) are reachable
+                tabs = QTabWidget()
+                tabs.addTab(primary, "Properties")
+                for tab_name, pmap in self.additional_maps.items():
+                    extra_root = pmap.find_category("Root")
+                    extra = PropertyTreeWidget(extra_root, None, settings, self)
+                    self._extra_trees.append(extra)
+                    tabs.addTab(extra, tab_name)
+                layout.addWidget(tabs)
+            else:
+                layout.addWidget(primary)
+
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.accept)
-        main_layout.addWidget(buttons)
+        layout.addWidget(buttons)
 
-        self.setLayout(main_layout)
-
-    def _create_tree_widget(
-        self,
-        property_map: PropertyMap,
-        root_name: str,
-        grabber: Optional[Grabber],
-    ) -> PropertyTreeWidget:
-        """Create a property tree widget for the given property map"""
-        root_category = property_map.find_category(root_name)
-
-        settings = PropertyTreeWidgetSettings(
-            show_root_item=False,
-            show_info_box=True,
-            show_filter=True,
-            initial_visibility=PropertyVisibility.BEGINNER,
-        )
-
-        return PropertyTreeWidget(root_category, grabber, settings, self)
+    # ── Public API ─────────────────────────────────────────────────
 
     def update_grabber(self, grabber: Grabber):
-        """Update with a new grabber"""
-        self._map = grabber.device_property_map
+        """Update with a new grabber (new device)."""
         self._grabber = grabber
-
-        if self._tree:
-            self._tree.update_grabber(grabber)
+        self._map = grabber.device_property_map
+        if isinstance(self._widget, TabbedPropertyWidget):
+            self._widget.update_grabber(grabber)
+        else:
+            self._widget.update_grabber(grabber)
 
     def update_property_map(self, property_map: PropertyMap):
-        """Update with a new property map"""
+        """Update with a new property map."""
         self._map = property_map
         self._grabber = None
+        if isinstance(self._widget, TabbedPropertyWidget):
+            self._widget._property_map = property_map
+            self._widget._grabber = None
+            self._widget._populate_tabs()
+        else:
+            self._widget.update_model(property_map.find_category("Root"))
 
-        if self._tree:
-            self._tree.update_model(property_map.find_category("Root"))
-
-    def set_prop_visibility(self, vis: PropertyVisibility):
-        """Set the visibility filter"""
-        if self._tree:
-            self._tree.set_prop_visibility(vis)
+    def clear_all(self):
+        """Drop all models – call before closing the device."""
+        if isinstance(self._widget, TabbedPropertyWidget):
+            self._widget.clear_all()
+        else:
+            self._widget.clear_model()
+        for tree in self._extra_trees:
+            tree.clear_model()
+        self._extra_trees.clear()
+        self._map = None
+        self._grabber = None
 
     def set_filter_text(self, filter_text: str):
-        """Set the filter text"""
-        if self._tree:
-            self._tree.set_filter_text(filter_text)
+        """Set the search text."""
+        self._widget.set_filter_text(filter_text)
 
     def apply_theme(self) -> None:
-        """Apply the current theme to this dialog"""
+        """Apply the current theme to this dialog."""
+        style_manager = get_style_manager()
         if self.resource_selector:
-            style_manager = get_style_manager()
             style_manager.apply_theme(self.resource_selector.get_theme())
+        else:
+            style_manager.apply_theme()
+
+        self.update()
+        if self._widget:
+            self._widget.update()
+        for tree in self._extra_trees:
+            tree.update()
+
+        app = QApplication.instance()
+        if app:
+            for widget in [self, self._widget, *self._extra_trees]:
+                if widget:
+                    widget.style().unpolish(widget)
+                    widget.style().polish(widget)

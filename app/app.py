@@ -1,11 +1,14 @@
 from imagingcontrol4.library import Library
-
 from PyQt6.QtWidgets import QApplication
+import sys, os
 
+app_dir = os.path.dirname(__file__)
+home_dir = os.path.dirname(app_dir)
+sys.path.insert(0, os.path.abspath(home_dir))
 from mainwindow import MainWindow
 
 
-def demoapp_main():
+def app_main():
     with Library.init_context():
         argv = []
         app = QApplication(argv)
@@ -20,4 +23,4 @@ def demoapp_main():
 
 
 if __name__ == "__main__":
-    demoapp_main()
+    app_main()
