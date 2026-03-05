@@ -11,8 +11,8 @@ from PyQt6.QtWidgets import (
     QLabel,
     QHBoxLayout,
     QDialogButtonBox,
+    QSpinBox,
 )
-from PyQt6.QtCore import Qt
 from typing import Optional, Any, Callable
 
 
@@ -35,7 +35,7 @@ class SettingsDialog(QDialog):
 
     def _create_ui(self):
         """Create the settings UI"""
-        self.setMinimumSize(400, 250)
+        self.setMinimumSize(420, 300)
 
         main_layout = QVBoxLayout()
 
@@ -82,6 +82,35 @@ class SettingsDialog(QDialog):
         layout_group.setLayout(layout_layout)
         main_layout.addWidget(layout_group)
 
+        # Power-supply polling settings group
+        polling_group = QGroupBox("Power Supply", self)
+        polling_layout = QVBoxLayout()
+
+        polling_row = QHBoxLayout()
+        polling_label = QLabel("Poll interval:", self)
+        self.poll_interval_spin = QSpinBox(self)
+        self.poll_interval_spin.setRange(50, 10000)
+        self.poll_interval_spin.setSingleStep(50)
+        self.poll_interval_spin.setSuffix(" ms")
+        self.poll_interval_spin.setValue(
+            self.resource_selector.get_power_supply_poll_interval_ms()
+        )
+        self.poll_interval_spin.setToolTip(
+            "Polling period for power-supply readback updates.\n"
+            "Lower = more responsive, higher = less USB traffic."
+        )
+        self.poll_interval_spin.valueChanged.connect(
+            self._on_power_supply_poll_interval_changed
+        )
+
+        polling_row.addWidget(polling_label)
+        polling_row.addWidget(self.poll_interval_spin)
+        polling_row.addStretch()
+        polling_layout.addLayout(polling_row)
+
+        polling_group.setLayout(polling_layout)
+        main_layout.addWidget(polling_group)
+
         # Add some spacing
         main_layout.addStretch()
 
@@ -107,3 +136,7 @@ class SettingsDialog(QDialog):
     def _on_tabbed_changed(self, checked: bool):
         """Handle tabbed-layout toggle"""
         self.resource_selector.set_tabbed_properties(checked)
+
+    def _on_power_supply_poll_interval_changed(self, interval_ms: int):
+        """Handle power-supply poll-interval changes."""
+        self.resource_selector.set_power_supply_poll_interval_ms(interval_ms)

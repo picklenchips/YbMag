@@ -186,7 +186,7 @@ class ELLMotor:
         Scan available COM ports and connect to first Elliptec motor found.
 
         Args:
-            explicit_port: Optional specific port to use (e.g., 3 for 'COM3')
+            explicit_port: Optional specific port to try first (e.g., 3 for 'COM3')
             address_range: Tuple of (min_address, max_address) to scan for devices within each COM port
         Returns:
             Tuple of (ELLMotor instance, ELLDevices instance, port used)
@@ -194,15 +194,24 @@ class ELLMotor:
         Raises:
             RuntimeError: If no motors found or no COM ports available
         """
+        ports_to_try = self.get_available_ports()
         if explicit_port:
-            ports_to_try = [f"COM{explicit_port}"]
-            if self.verbose:
-                print(f"Using explicit port: {ports_to_try[0]}")
-        else:
-            ports_to_try = self.get_available_ports()
-            if self.verbose:
-                print(f"Detected COM ports: {ports_to_try}")
-
+            detected_explicit = False
+            for i in range(len(ports_to_try)):
+                port = ports_to_try[i]
+                if port.upper() == f"COM{explicit_port}":
+                    detected_explicit = True
+                    # swap explicit port to front of list
+                    temp = ports_to_try[0]
+                    ports_to_try[0] = ports_to_try[i]
+                    ports_to_try[i] = temp
+                    break
+            if not detected_explicit and self.verbose:
+                print(
+                    f"Warning: Explicit port COM{explicit_port} not found among detected ports."
+                )
+        if self.verbose:
+            print(f"Trying COM ports: {ports_to_try}")
         if not ports_to_try:
             raise RuntimeError("No COM ports available.")
 

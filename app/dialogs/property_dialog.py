@@ -131,6 +131,9 @@ class PropertyDialog(QDialog):
         for tree in self._extra_trees:
             tree.clear_model()
         self._extra_trees.clear()
+        # Release references to additional PropertyMap objects so they can be
+        # garbage collected before the IC4 Library context is torn down
+        self.additional_maps.clear()
         self._map = None
         self._grabber = None
 

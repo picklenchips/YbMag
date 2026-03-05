@@ -37,6 +37,7 @@ from devices.rigol_dp832a import RigolDP832A, PowerSupplyManager, ChannelInfo
 from dialogs.controls.basic_slider import BasicSlider
 from resources.style_manager import get_style_manager
 
+SETTINGS_PATH = Path(__file__).parent.parent / "settings" / "settings.json"
 
 # ---------------------------------------------------------------------------
 # Helper: Settings loader
@@ -45,12 +46,30 @@ from resources.style_manager import get_style_manager
 
 def _load_settings() -> Dict[str, Any]:
     """Load settings from settings.json."""
-    settings_path = Path(__file__).parent.parent / "resources" / "settings.json"
     try:
-        with open(settings_path, "r") as f:
+        with open(SETTINGS_PATH, "r") as f:
             return json.load(f)
     except Exception:
         return {}
+
+
+def _get_power_supply_poll_interval_ms(default_ms: int = 350) -> int:
+    """Get poll interval for power supply background updates from settings."""
+    settings = _load_settings()
+
+    # Prefer dedicated top-level key; allow nested fallback for compatibility.
+    raw = settings.get(
+        "power_supply_poll_interval_ms",
+        settings.get("power_supplies", {}).get("poll_interval_ms", default_ms),
+    )
+
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default_ms
+
+    # Avoid pathological values that can starve the UI/event loop.
+    return max(50, value)
 
 
 def _get_supply_display_name(supply: RigolDP832A) -> str:
@@ -363,7 +382,7 @@ class SupplySection(QWidget):
 class PowerSupplyDialog(QDialog):
     """Dialog for controlling all connected Rigol DP832A power supplies."""
 
-    _POLL_INTERVAL_MS = 350  # background poll rate
+    _DEFAULT_POLL_INTERVAL_MS = 350
 
     def __init__(
         self,
@@ -380,6 +399,9 @@ class PowerSupplyDialog(QDialog):
         self._poll_signals = _PollSignals()
         self._poll_signals.finished.connect(self._on_poll_finished)
         self._poll_busy = False
+        self._poll_interval_ms = _get_power_supply_poll_interval_ms(
+            self._DEFAULT_POLL_INTERVAL_MS
+        )
 
         self._create_ui()
         self._populate()
@@ -387,7 +409,7 @@ class PowerSupplyDialog(QDialog):
         # Start polling timer
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._on_poll_tick)
-        self._poll_timer.start(self._POLL_INTERVAL_MS)
+        self._poll_timer.start(self._poll_interval_ms)
 
     # -- UI -----------------------------------------------------------------
 
@@ -434,7 +456,7 @@ class PowerSupplyDialog(QDialog):
         if not supplies:
             if self._no_supplies_lbl is None:
                 self._no_supplies_lbl = QLabel(
-                    "No power supplies found.\nClick Refresh to scan USB."
+                    "No power supplies found (are they on?). \nClick Refresh to scan USB ports once more."
                 )
                 self._no_supplies_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._no_supplies_lbl.setStyleSheet("color: #888; padding: 40px;")

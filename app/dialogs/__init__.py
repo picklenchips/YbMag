@@ -9,6 +9,7 @@ from .settings_dialog import SettingsDialog
 from .power_supply_dialog import PowerSupplyDialog
 from .hdr_dialog import HDRDialog
 from .rotary_motor import RotaryMotorDialog
+from .digilent_dialog import DigilentDialog
 
 __all__ = [
     "PropertyDialog",
@@ -17,4 +18,5 @@ __all__ = [
     "PowerSupplyDialog",
     "HDRDialog",
     "RotaryMotorDialog",
+    "DigilentDialog",
 ]

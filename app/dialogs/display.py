@@ -6,7 +6,7 @@ Original source: C:\ProgramData\miniconda3\envs\control\Lib\site-packages\imagin
 2. Added :py:attr:`_DisplayWindow._display` for easier access to the display object
 3. General typing cleanup and code comments
 
-2/27/26 Now using `app/displaywindow.py` to manage the OpenGL context and rendering, with overlay support for mouse events.
+2/27/26 Now using `app/displaywindow.py` to manage the OpenGL context and rendering, with overlay support for mouse event, ROI selection, and custom drawing. :py:class:`.DisplayWidget` may still be referenced for normal image displays.
 """
 
 from weakref import ref

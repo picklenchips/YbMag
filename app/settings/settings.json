@@ -1,0 +1,55 @@
+{
+  "theme": "auto",
+  "tabbed_properties": false,
+  "power_supply_poll_interval_ms": 500,
+  "rotary_motors": {
+    "port": 3,
+    "11400178_0": {
+      "waypoints": {
+        "90": 90.00251116071429,
+        "180": 180.01004464285714,
+        "45": 45.0
+      }
+    }
+  },
+  "power_supplies": {
+    "DP8B240900562": {
+      "name": "right",
+      "model": "DP832A",
+      "channels": {
+        "1": {
+          "name": "+x"
+        },
+        "2": {
+          "name": "-z"
+        },
+        "3": {
+          "name": "+y"
+        }
+      }
+    },
+    "DP8B240900555": {
+      "name": "left",
+      "model": "DP832A",
+      "channels": {
+        "1": {
+          "name": "Big +z"
+        },
+        "2": {
+          "name": "Small +z"
+        },
+        "3": {
+          "name": "-x"
+        }
+      }
+    }
+  },
+  "digilent": {
+    "last_device_serial": "",
+    "channel_names": {
+      "0": "Trigger",
+      "1": "Burst"
+    },
+    "presets": {}
+  }
+}

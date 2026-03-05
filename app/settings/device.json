@@ -1,0 +1,51 @@
+{
+  "device": {
+    "model_name": "DMK 33UX252",
+    "serial": "08910088",
+    "unique_name": "The Imaging Source Europe GmbH-ic4-gentl-u3v-08910088"
+  },
+  "driver_properties": {
+    "LinkCommandTimeout": 5000000.0
+  },
+  "properties": {
+    "AcquisitionBurstFrameCount": 1,
+    "AcquisitionFrameRate": 10.0,
+    "AutoFunctionsROIEnable": true,
+    "AutoFunctionsROIPreset": "AutoFunctionsROIPreset_Center50Pct",
+    "BlackLevel": 240.0,
+    "Contrast": 0,
+    "Denoise": 0,
+    "ExposureAuto": "Off",
+    "ExposureAutoHighlightReduction": false,
+    "ExposureAutoReference": 128,
+    "ExposureTime": 33333.0,
+    "GPOut": 0,
+    "Gain": 47.900000000000006,
+    "GainAuto": "Off",
+    "Gamma": 1.81,
+    "Height": 1536,
+    "IMXLowLatencyTriggerMode": false,
+    "LUTEnable": false,
+    "PixelFormat": "Mono8",
+    "ReverseX": false,
+    "ReverseY": false,
+    "Sharpness": 0,
+    "SoftwareTransformEnable": true,
+    "StrobeDelay": 0,
+    "StrobeEnable": "Off",
+    "StrobeOperation": "Exposure",
+    "StrobePolarity": "ActiveLow",
+    "ToneMappingAuto": true,
+    "ToneMappingEnable": false,
+    "ToneMappingGlobalBrightness": 0.0,
+    "ToneMappingIntensity": 0.0,
+    "TriggerActivation": "RisingEdge",
+    "TriggerDebouncer": 0.0,
+    "TriggerDelay": 3.1,
+    "TriggerDenoise": 0.0,
+    "TriggerMask": 0.0,
+    "TriggerMode": "Off",
+    "TriggerSource": "Any",
+    "Width": 2048
+  }
+}

@@ -11,7 +11,6 @@ from PyQt6.QtCore import (
     QEvent,
     QFileInfo,
     Qt,
-    QCoreApplication,
 )
 from PyQt6.QtGui import QAction, QKeySequence, QCloseEvent
 from PyQt6.QtWidgets import (
@@ -45,7 +44,7 @@ from resources.resourceselector import get_resource_selector
 from resources.style_manager import get_style_manager, ThemeMode
 
 # local imports
-from displaywindow import EnhancedDisplayWidget
+from display_roi import DisplayWidgetROI
 from dialogs import (
     PropertyDialog,
     DeviceSelectionDialog,
@@ -53,11 +52,13 @@ from dialogs import (
     PowerSupplyDialog,
     HDRDialog,
     RotaryMotorDialog,
+    DigilentDialog,
 )
 from devices.rigol_dp832a import PowerSupplyManager
 
 GOT_PHOTO_EVENT = QEvent.Type(QEvent.Type.User + 1)
 DEVICE_LOST_EVENT = QEvent.Type(QEvent.Type.User + 2)
+SETTINGS_PATH = Path(__file__).parent / "settings" / "settings.json"
 
 
 class GotPhotoEvent(QEvent):
@@ -72,11 +73,6 @@ class MainWindow(QMainWindow):
         QMainWindow.__init__(self)
 
         # Make sure the %appdata%/demoapp directory exists
-        appdata_directory = QStandardPaths.writableLocation(
-            QStandardPaths.StandardLocation.AppDataLocation
-        )
-        QDir(appdata_directory).mkpath(".")
-
         self.save_pictures_directory = QStandardPaths.writableLocation(
             QStandardPaths.StandardLocation.PicturesLocation
         )
@@ -84,8 +80,11 @@ class MainWindow(QMainWindow):
             QStandardPaths.StandardLocation.MoviesLocation
         )
 
-        self.device_file = appdata_directory + "/device.json"
-        self.codec_config_file = appdata_directory + "/codecconfig.json"
+        # Store device and codec config files locally in settings folder
+        settings_dir = Path(__file__).parent / "settings"
+        settings_dir.mkdir(exist_ok=True)
+        self.device_file = str(settings_dir / "device.json")
+        self.codec_config_file = str(settings_dir / "codecconfig.json")
 
         self.shoot_photo_mutex = Lock()
         self.shoot_photo = False
@@ -157,6 +156,7 @@ class MainWindow(QMainWindow):
         self.power_supply_dialog = None
         self.rotary_motor_dialog = None
         self.hdr_dialog = None
+        self.digilent_dialog = None
 
         # Power supply manager (Qt-free backend)
         self.power_supply_manager = PowerSupplyManager()
@@ -284,6 +284,13 @@ class MainWindow(QMainWindow):
         self.rotary_motor_act.setCheckable(True)
         self.rotary_motor_act.triggered.connect(self.onRotaryMotor)
 
+        self.digilent_act = QAction(
+            selector.loadIcon("images/digilent.png"), "&Digilent", self
+        )
+        self.digilent_act.setStatusTip("Open Digilent pattern generator")
+        self.digilent_act.setCheckable(True)
+        self.digilent_act.triggered.connect(self.onDigilent)
+
         self.hdr_act = QAction(
             selector.loadIcon("images/photo.png"), "&HDR Capture", self
         )
@@ -349,6 +356,7 @@ class MainWindow(QMainWindow):
         assert instruments_menu is not None
         instruments_menu.addAction(self.power_supply_act)
         instruments_menu.addAction(self.rotary_motor_act)
+        instruments_menu.addAction(self.digilent_act)
         instruments_menu.addAction(self.hdr_act)
 
         capture_menu = menubar.addMenu("&Capture")
@@ -376,9 +384,10 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self.power_supply_act)
         toolbar.addAction(self.rotary_motor_act)
+        toolbar.addAction(self.digilent_act)
         toolbar.addAction(self.hdr_act)
 
-        self.video_widget = EnhancedDisplayWidget()
+        self.video_widget = DisplayWidgetROI()
         self.video_widget.setMinimumSize(640, 480)
         self.setCentralWidget(self.video_widget)
 
@@ -499,6 +508,10 @@ class MainWindow(QMainWindow):
         # Clear property dialog models so PropertyMap refs are released
         # before the Library context is torn down
         if self.property_dialog is not None:
+            # Close the dialog if it's still visible
+            if self.property_dialog.isVisible():
+                self.property_dialog.close()
+            # Clear all IC4 object references
             self.property_dialog.clear_all()
             self.property_dialog = None
 
@@ -507,6 +520,12 @@ class MainWindow(QMainWindow):
             self.rotary_motor_dialog.cleanup()
             self.rotary_motor_dialog.close()
             self.rotary_motor_dialog = None
+
+        # Cleanup Digilent dialog
+        if self.digilent_dialog is not None:
+            self.digilent_dialog.cleanup()
+            self.digilent_dialog.close()
+            self.digilent_dialog = None
 
         # Force cyclic GC so PropertyMap / Property pointers wrapped by
         # PropertyTreeNode (which have parent<->children cycles) are freed
@@ -590,6 +609,9 @@ class MainWindow(QMainWindow):
         """Handle property dialog closed"""
         # Save codec config when properties dialog closes
         self.video_writer.property_map.serialize_to_file(self.codec_config_file)
+        # Release IC4 object references to allow proper garbage collection
+        if self.property_dialog is not None:
+            self.property_dialog.clear_all()
         self.device_properties_act.setChecked(False)
         self.property_dialog = None
 
@@ -727,7 +749,9 @@ class MainWindow(QMainWindow):
             height = max(height_prop.minimum, min(height, height_prop.maximum))
             width = _align_up(width, width_inc, width_prop.minimum)
             height = _align_up(height, height_inc, height_prop.minimum)
-            width = min(width, _align_down(width_prop.maximum, width_inc, width_prop.minimum))
+            width = min(
+                width, _align_down(width_prop.maximum, width_inc, width_prop.minimum)
+            )
             height = min(
                 height,
                 _align_down(height_prop.maximum, height_inc, height_prop.minimum),
@@ -1207,10 +1231,9 @@ class MainWindow(QMainWindow):
             # Load motor port from settings
             import json
 
-            settings_path = Path(__file__).parent / "resources" / "settings.json"
             port = None
             try:
-                with open(settings_path, "r") as f:
+                with open(SETTINGS_PATH, "r") as f:
                     settings = json.load(f)
                     port = settings.get("rotary_motors", {}).get("port")
             except Exception:
@@ -1231,6 +1254,23 @@ class MainWindow(QMainWindow):
     def _onRotaryMotorDialogClosed(self):
         """Handle rotary motor dialog closed."""
         self.rotary_motor_act.setChecked(False)
+
+    def onDigilent(self):
+        """Open or close the Digilent pattern generator dialog."""
+        if self.digilent_dialog is not None and self.digilent_dialog.isVisible():
+            self.digilent_dialog.close()
+            return
+
+        self.digilent_dialog = DigilentDialog(parent=self)
+        self.digilent_dialog.apply_theme()
+        self.digilent_dialog.finished.connect(self._onDigilentDialogClosed)
+        self.digilent_act.setChecked(True)
+        self.digilent_dialog.show()
+
+    def _onDigilentDialogClosed(self):
+        """Handle Digilent dialog closed."""
+        self.digilent_act.setChecked(False)
+        self.digilent_dialog = None
 
     def onHDRCapture(self):
         """Open or close the HDR capture dialog."""

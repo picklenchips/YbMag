@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, List, Dict, Any
+from concurrent.futures import ThreadPoolExecutor, Future
+from typing import Optional, List, Dict, Any, Literal
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QIcon
@@ -32,7 +32,6 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QListWidget,
     QListWidgetItem,
-    QSpinBox,
     QDoubleSpinBox,
     QMessageBox,
 )
@@ -41,7 +40,7 @@ from devices.ell_motor import ELLMotor
 from dialogs.controls.basic_slider import BasicSlider
 from resources.style_manager import get_style_manager
 
-
+SETTINGS_PATH = Path(__file__).parent.parent / "settings" / "settings.json"
 # ---------------------------------------------------------------------------
 # Helper: Settings loader
 # ---------------------------------------------------------------------------
@@ -49,9 +48,8 @@ from resources.style_manager import get_style_manager
 
 def _load_settings() -> Dict[str, Any]:
     """Load settings from settings.json."""
-    settings_path = Path(__file__).parent.parent / "resources" / "settings.json"
     try:
-        with open(settings_path, "r") as f:
+        with open(SETTINGS_PATH, "r") as f:
             return json.load(f)
     except Exception:
         return {}
@@ -59,9 +57,8 @@ def _load_settings() -> Dict[str, Any]:
 
 def _save_settings(settings: Dict[str, Any]) -> bool:
     """Save settings to settings.json."""
-    settings_path = Path(__file__).parent.parent / "resources" / "settings.json"
     try:
-        with open(settings_path, "w") as f:
+        with open(SETTINGS_PATH, "w") as f:
             json.dump(settings, f, indent=2)
         return True
     except Exception:
@@ -434,15 +431,23 @@ class WaypointsWidget(QWidget):
 # Maintenance Widget
 # ---------------------------------------------------------------------------
 
+maintenance_ops = Literal["clean", "optimize", "clean_and_optimize"]
+
 
 class MaintenanceWidget(QWidget):
     """Widget for motor maintenance operations."""
 
-    def __init__(self, motor: ELLMotor, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        motor: ELLMotor,
+        executor: ThreadPoolExecutor,
+        parent: Optional[QWidget] = None,
+    ):
         super().__init__(parent)
         self._motor = motor
-        self._maintenance_thread = None
-        self._current_operation = None
+        self._executor = executor
+        self._maintenance_future: Optional[Future] = None
+        self._current_operation: maintenance_ops | None = None
         self._maintenance_signals = _MaintenanceSignals()
         self._maintenance_signals.started.connect(self._on_maintenance_started)
         self._maintenance_signals.finished.connect(self._on_maintenance_finished)
@@ -470,23 +475,38 @@ class MaintenanceWidget(QWidget):
         btn_layout = QHBoxLayout()
 
         self.clean_btn = QPushButton("Clean")
-        self.clean_btn.clicked.connect(lambda: self._start_maintenance("clean"))
+        self.clean_btn.clicked.connect(self._on_maintenance_btn_clicked)
         btn_layout.addWidget(self.clean_btn)
 
         self.optimize_btn = QPushButton("Optimize")
-        self.optimize_btn.clicked.connect(lambda: self._start_maintenance("optimize"))
+        self.optimize_btn.clicked.connect(self._on_maintenance_btn_clicked)
         btn_layout.addWidget(self.optimize_btn)
 
         self.clean_optimize_btn = QPushButton("Clean & Optimize")
-        self.clean_optimize_btn.clicked.connect(
-            lambda: self._start_maintenance("clean_and_optimize")
-        )
+        self.clean_optimize_btn.clicked.connect(self._on_maintenance_btn_clicked)
         btn_layout.addWidget(self.clean_optimize_btn)
 
         group_layout.addLayout(btn_layout)
         main.addWidget(maint_group)
 
-    def _start_maintenance(self, operation: str) -> None:
+    def _on_maintenance_btn_clicked(self) -> None:
+        """Unified button handler using sender() pattern."""
+        sender = self.sender()
+
+        # If maintenance is running, stop it
+        if self._current_operation is not None:
+            self._stop_maintenance()
+            return
+
+        # Otherwise, determine which operation to start
+        if sender is self.clean_btn:
+            self._start_maintenance("clean")
+        elif sender is self.optimize_btn:
+            self._start_maintenance("optimize")
+        else:  # clean_optimize_btn
+            self._start_maintenance("clean_and_optimize")
+
+    def _start_maintenance(self, operation: maintenance_ops) -> None:
         """Start a maintenance operation with confirmation."""
         # Confirm with user
         msg = QMessageBox(self)
@@ -496,21 +516,21 @@ class MaintenanceWidget(QWidget):
         if operation == "clean":
             msg.setText("Start cleaning cycle?")
             msg.setInformativeText(
-                "This will run a cleaning cycle.\n\n"
+                "This will run a cleaning cycle (~10 min) after around 30 seconds.\n\n"
                 "⚠️ Wait at least 30 minutes between maintenance operations.\n\n"
                 "This operation can be stopped by clicking the button again."
             )
         elif operation == "optimize":
             msg.setText("Start optimization cycle?")
             msg.setInformativeText(
-                "This will run an optimization cycle.\n\n"
+                "This will run an optimization cycle (10-15 min) after around 30 seconds.\n\n"
                 "⚠️ Wait at least 30 minutes between maintenance operations.\n\n"
                 "This operation can be stopped by clicking the button again."
             )
         else:  # clean_and_optimize
             msg.setText("Start cleaning and optimization cycle?")
             msg.setInformativeText(
-                "This will run a full cleaning and optimization cycle (10-15 min).\n\n"
+                "This will run a full cleaning and optimization cycle (10-15 min) after ~30 seconds.\n\n"
                 "⚠️ Wait at least 30 minutes between maintenance operations.\n\n"
                 "This operation can be stopped by clicking the button again."
             )
@@ -527,14 +547,11 @@ class MaintenanceWidget(QWidget):
         self._current_operation = operation
         self._maintenance_signals.started.emit()
 
-        from threading import Thread
-
-        self._maintenance_thread = Thread(
-            target=self._run_maintenance, args=(operation,)
+        self._maintenance_future = self._executor.submit(
+            self._run_maintenance, operation
         )
-        self._maintenance_thread.start()
 
-    def _run_maintenance(self, operation: str) -> None:
+    def _run_maintenance(self, operation: maintenance_ops) -> None:
         """Run maintenance operation in background thread."""
         try:
             if operation == "clean":
@@ -558,31 +575,16 @@ class MaintenanceWidget(QWidget):
 
     def _on_maintenance_started(self) -> None:
         """Handle maintenance operation started."""
-        # Update button text and functionality
+        # Update button text and tooltip to indicate stop capability
         if self._current_operation == "clean":
-            self.clean_btn.setText("Cleaning...")
+            self.clean_btn.setText("Cleaning... (click to stop)")
             self.clean_btn.setToolTip("Click to stop cleaning")
-            try:
-                self.clean_btn.clicked.disconnect()
-            except TypeError:
-                pass  # Nothing was connected
-            self.clean_btn.clicked.connect(self._stop_maintenance)
         elif self._current_operation == "optimize":
-            self.optimize_btn.setText("Optimizing...")
+            self.optimize_btn.setText("Optimizing... (click to stop)")
             self.optimize_btn.setToolTip("Click to stop optimizing")
-            try:
-                self.optimize_btn.clicked.disconnect()
-            except TypeError:
-                pass  # Nothing was connected
-            self.optimize_btn.clicked.connect(self._stop_maintenance)
         else:  # clean_and_optimize
-            self.clean_optimize_btn.setText("Cleaning & Optimizing...")
+            self.clean_optimize_btn.setText("Cleaning & Optimizing... (click to stop)")
             self.clean_optimize_btn.setToolTip("Click to stop")
-            try:
-                self.clean_optimize_btn.clicked.disconnect()
-            except TypeError:
-                pass  # Nothing was connected
-            self.clean_optimize_btn.clicked.connect(self._stop_maintenance)
 
         # Disable other buttons
         self._set_other_buttons_enabled(False)
@@ -604,29 +606,15 @@ class MaintenanceWidget(QWidget):
         """Reset all buttons to initial state."""
         self.clean_btn.setText("Clean")
         self.clean_btn.setToolTip("")
-        try:
-            self.clean_btn.clicked.disconnect()
-        except TypeError:
-            pass  # Nothing was connected
-        self.clean_btn.clicked.connect(lambda: self._start_maintenance("clean"))
+        self.clean_btn.setEnabled(True)
 
         self.optimize_btn.setText("Optimize")
         self.optimize_btn.setToolTip("")
-        try:
-            self.optimize_btn.clicked.disconnect()
-        except TypeError:
-            pass  # Nothing was connected
-        self.optimize_btn.clicked.connect(lambda: self._start_maintenance("optimize"))
+        self.optimize_btn.setEnabled(True)
 
         self.clean_optimize_btn.setText("Clean & Optimize")
         self.clean_optimize_btn.setToolTip("")
-        try:
-            self.clean_optimize_btn.clicked.disconnect()
-        except TypeError:
-            pass  # Nothing was connected
-        self.clean_optimize_btn.clicked.connect(
-            lambda: self._start_maintenance("clean_and_optimize")
-        )
+        self.clean_optimize_btn.setEnabled(True)
 
         self._set_other_buttons_enabled(True)
         self._current_operation = None
@@ -648,7 +636,28 @@ class MaintenanceWidget(QWidget):
 
     def is_running(self) -> bool:
         """Check if a maintenance operation is running."""
-        return self._current_operation is not None
+        if self._maintenance_future is None:
+            return False
+        return not self._maintenance_future.done()
+
+    def wait_for_completion(self, timeout: float = 20 * 60) -> bool:
+        """
+        Wait for maintenance to complete with timeout.
+
+        Args:
+            timeout: Maximum time to wait in seconds (default 20 minutes)
+
+        Returns:
+            True if completed successfully, False if timeout or error
+        """
+        if self._maintenance_future is None:
+            return True
+
+        try:
+            self._maintenance_future.result(timeout=timeout)
+            return True
+        except Exception:
+            return False  # Timeout or error occurred
 
 
 # ---------------------------------------------------------------------------
@@ -804,6 +813,15 @@ class RotaryMotorDialog(QDialog):
         """Disconnect from motor in background thread."""
         try:
             if self._motor:
+                # Best-effort stop of ongoing maintenance before disconnect.
+                # Maintenance commands are blocking in the driver, so we wait briefly
+                # for completion after issuing stop.
+                if self.maintenance_widget and self.maintenance_widget.is_running():
+                    try:
+                        self._motor.stop_cleaning()
+                    except Exception:
+                        pass
+                    self.maintenance_widget.wait_for_completion(timeout=10)
                 self._motor.disconnect()
             self._connection_signals.disconnected.emit()
         except Exception as e:
@@ -871,7 +889,7 @@ class RotaryMotorDialog(QDialog):
 
         # Maintenance widget
         self.maintenance_widget = MaintenanceWidget(
-            self._motor, parent=self.scroll_widget
+            self._motor, self._executor, parent=self.scroll_widget
         )
         scroll_layout.addWidget(self.maintenance_widget)
 
@@ -928,6 +946,13 @@ class RotaryMotorDialog(QDialog):
     def cleanup(self) -> None:
         """Cleanup method for app shutdown - disconnects motor."""
         self._poll_timer.stop()
+
+        # Wait for maintenance to complete before shutting down executor
+        if self.maintenance_widget and self.maintenance_widget.is_running():
+            timeout_ok = self.maintenance_widget.wait_for_completion(timeout=60)
+            if not timeout_ok:
+                print("WARNING: Maintenance timeout during cleanup, forcing shutdown")
+
         self._executor.shutdown(wait=True)
         try:
             if self._motor:

@@ -1,10 +1,7 @@
 r"""
-Window displaying image data from a stream.
-2/18/2026
-Original source: C:\ProgramData\miniconda3\envs\control\Lib\site-packages\imagingcontrol4\pyside6\display.py
-1. Refactored from PySide6 to PyQt6
-2. Added :py:attr:`_DisplayWindow._display` for easier access to the display object
-3. General typing cleanup and code comments
+Window displaying image data from an IC4 stream, with support for ROI selection and pixel info display.
+3/2026
+See `.app/display.py` for the base display widget without ROI/pixel info features.
 """
 
 from weakref import ref
@@ -33,7 +30,9 @@ from imagingcontrol4.imagebuffer import ImageBuffer
 from OpenGL import GL
 
 
-class _DisplayWindow(QWindow):
+class _DisplayWindowROI(QWindow):
+    """Manages OpenGL context and rendering for a display, with support for ROI overlay."""
+
     _owner: QWidget
     _context: QOpenGLContext
     _displayRef: ref[ExternalOpenGLDisplay] | None = None
@@ -236,19 +235,19 @@ class _DisplayWindow(QWindow):
             return self._display
 
 
-class DisplayWidget(QWidget):
+class DisplayWidgetBase(QWidget):
     """A Qt display widget
 
     Use :meth:`.as_display` to get a :class:`.Display` representing the display. The display can then be passed to :meth:`.Grabber.stream_setup`.
     """
 
-    _display_window: _DisplayWindow
+    _display_window: _DisplayWindowROI
     _display_container: QWidget
 
     def __init__(self):
         QWidget.__init__(self)
 
-        self._display_window = _DisplayWindow(self)
+        self._display_window = _DisplayWindowROI(self)
         self._display_container = QWidget.createWindowContainer(
             self._display_window, self
         )
@@ -292,7 +291,7 @@ class DisplayWidget(QWidget):
             return False
 
 
-class EnhancedDisplayWidget(DisplayWidget):
+class DisplayWidgetROI(DisplayWidgetBase):
     """Enhanced display widget with ROI selection and pixel info on hover.
 
     Features:
@@ -591,12 +590,12 @@ class DisplayWindow(QMainWindow):
     Use :meth:`.as_display` to get a :class:`.Display` representing the display. The display can then be passed to :meth:`.Grabber.stream_setup`.
     """
 
-    _display_widget: DisplayWidget
+    _display_widget: DisplayWidgetBase
 
     def __init__(self, **kwargs):
         QMainWindow.__init__(self, **kwargs)
 
-        self._display_widget = DisplayWidget()
+        self._display_widget = DisplayWidgetBase()
         self.setCentralWidget(self._display_widget)
 
     def as_display(self) -> Display:

@@ -290,6 +290,9 @@ class TabbedPropertyWidget(QWidget):
                 w.deleteLater()
 
         self._tabs.clear()
+        # Release references to additional PropertyMap objects so they can be
+        # garbage collected before the IC4 Library context is torn down
+        self._additional_maps.clear()
 
     def _refresh_view(self, view, proxy, model):
         """Re-setup a tab's view after model data/layout change."""

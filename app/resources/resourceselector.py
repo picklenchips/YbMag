@@ -34,17 +34,19 @@ class ResourceSelector:
     # Keys used in the JSON settings file
     _KEY_THEME = "theme"
     _KEY_TABBED = "tabbed_properties"
+    _KEY_POWER_SUPPLY_POLL_INTERVAL_MS = "power_supply_poll_interval_ms"
 
     def __init__(self):
         # Get the directory of this script (resourceselector.py)
         self.base_dir = Path(__file__).parent
 
-        # Settings file lives alongside this script in the resources folder
-        self._settings_path = self.base_dir / "settings.json"
+        # Settings file lives in the settings folder
+        self._settings_path = self.base_dir.parent / "settings" / "settings.json"
 
         # Defaults
         self._theme_mode: Literal["auto", "light", "dark"] = "auto"
         self._tabbed_properties: bool = True
+        self._power_supply_poll_interval_ms: int = 350
 
         # Load persisted values (if any)
         self._load()
@@ -67,15 +69,30 @@ class ResourceSelector:
                 self._theme_mode = data[self._KEY_THEME]
             if isinstance(data.get(self._KEY_TABBED), bool):
                 self._tabbed_properties = data[self._KEY_TABBED]
+            poll_ms = data.get(self._KEY_POWER_SUPPLY_POLL_INTERVAL_MS)
+            if isinstance(poll_ms, int):
+                self._power_supply_poll_interval_ms = max(50, poll_ms)
+            elif isinstance(poll_ms, str) and poll_ms.isdigit():
+                self._power_supply_poll_interval_ms = max(50, int(poll_ms))
         except Exception:
             pass
 
     def _save(self):
         """Write current settings to the JSON file."""
-        data = {
-            self._KEY_THEME: self._theme_mode,
-            self._KEY_TABBED: self._tabbed_properties,
-        }
+        data = {}
+        try:
+            existing = json.loads(self._settings_path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                data.update(existing)
+        except Exception:
+            pass
+
+        data[self._KEY_THEME] = self._theme_mode
+        data[self._KEY_TABBED] = self._tabbed_properties
+        data[self._KEY_POWER_SUPPLY_POLL_INTERVAL_MS] = (
+            self._power_supply_poll_interval_ms
+        )
+
         try:
             self._settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except Exception:
@@ -105,6 +122,15 @@ class ResourceSelector:
     def get_tabbed_properties(self) -> bool:
         """Return True if the tabbed property dialog layout is active."""
         return self._tabbed_properties
+
+    def set_power_supply_poll_interval_ms(self, interval_ms: int):
+        """Set the power-supply poll interval in milliseconds."""
+        self._power_supply_poll_interval_ms = max(50, int(interval_ms))
+        self._save()
+
+    def get_power_supply_poll_interval_ms(self) -> int:
+        """Get the power-supply poll interval in milliseconds."""
+        return self._power_supply_poll_interval_ms
 
     def select(self, item: str) -> str:
         # Construct path relative to this script's location with theme directory

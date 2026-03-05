@@ -1,6 +1,14 @@
 import math
 
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLineEdit, QSlider, QMainWindow
+from PyQt6.QtWidgets import (
+    QWidget,
+    QHBoxLayout,
+    QLineEdit,
+    QSlider,
+    QMainWindow,
+    QLabel,
+)
+from PyQt6.QtGui import QDoubleValidator
 from PyQt6.QtCore import Qt, pyqtSignal
 
 
@@ -8,8 +16,8 @@ class BasicSlider(QWidget):
     """A slider with an editable text field showing the current value.
 
     The slider has a range from *min* to *maximum* with a specified *step* size.
-    An optional *unit* string (e.g. ``"V"``, ``"A"``) is appended to the text field.
-    Users can click the text field to directly edit the value.
+    An optional *unit* string (e.g. ``"V"``, ``"A"``) is shown in a separate label
+    to the right of the text field so the edit box always stays numeric.
 
     Signals
     -------
@@ -44,6 +52,7 @@ class BasicSlider(QWidget):
         step_precision = max(0, -int(math.floor(math.log10(step)))) if step < 1 else 0
         self.float_precision = max(float_precision, step_precision)
         self.nsteps = (maximum - min) / step
+        self._epsilon = max(float(step) * 1e-6, 1e-12)
 
         self._programmatic = False  # guard against signal loops
 
@@ -57,6 +66,11 @@ class BasicSlider(QWidget):
         self.value_edit.returnPressed.connect(self._on_text_edited)
         self.value_edit.setMinimumWidth(80)
         self.value_edit.setMaximumWidth(100)
+        self.value_edit.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+        validator = QDoubleValidator(self.min, self.max, self.float_precision, self)
+        validator.setNotation(QDoubleValidator.Notation.StandardNotation)
+        self.value_edit.setValidator(validator)
 
         # Horizontal slider: stretches to fill available width
         self.slider = QSlider(orientation=Qt.Orientation.Horizontal, parent=self)
@@ -66,6 +80,15 @@ class BasicSlider(QWidget):
         self.slider.setValue(int(round((self.default - self.min) / self.step)))
         layout.addWidget(self.slider, stretch=1)  # Takes all available horizontal space
         layout.addWidget(self.value_edit)  # Fixed size based on content
+        if self.unit:
+            self.unit_label = QLabel(self.unit, parent=self)
+            self.unit_label.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
+            self.unit_label.setMinimumWidth(12)
+            layout.addWidget(self.unit_label)
+        else:
+            self.unit_label = None
 
         self.setLayout(layout)
 
@@ -77,9 +100,16 @@ class BasicSlider(QWidget):
         ``valueChanged``."""
         value = max(self.min, min(value, self.max))
         tick = int(round((value - self.min) / self.step))
+        formatted = self._format_value_text(value)
+
+        # Keep user typing stable: do not overwrite text while the edit box has focus.
+        editing_text = self.value_edit.hasFocus()
+
         self._programmatic = True
-        self.slider.setValue(tick)
-        self.value_edit.setText(self._format_value_text(value))
+        if self.slider.value() != tick:
+            self.slider.setValue(tick)
+        if not editing_text and self.value_edit.text() != formatted:
+            self.value_edit.setText(formatted)
         self._programmatic = False
 
     # keep old name as internal alias
@@ -89,32 +119,29 @@ class BasicSlider(QWidget):
     def _on_slider_changed(self) -> None:
         """Internal handler for QSlider.valueChanged."""
         val = self.get_value()
-        self.value_edit.setText(self._format_value_text(val))
+        formatted = self._format_value_text(val)
+        if not self.value_edit.hasFocus() and self.value_edit.text() != formatted:
+            self.value_edit.setText(formatted)
         if not self._programmatic:
             self.valueChanged.emit(val)
 
     def _on_text_edited(self) -> None:
         """Internal handler for QLineEdit return pressed."""
         try:
-            text = self.value_edit.text().strip()
-            # Remove unit suffix if present
-            if self.unit and text.endswith(self.unit):
-                text = text[: -len(self.unit)].strip()
-            val = float(text)
+            val = float(self.value_edit.text().strip())
             # Clamp to valid range
             val = max(self.min, min(val, self.max))
+            prev = self.get_value()
             self.set_value(val)
-            self.valueChanged.emit(val)
+            if abs(val - prev) > self._epsilon:
+                self.valueChanged.emit(val)
         except ValueError:
             # Invalid input, revert to current value
             self.value_edit.setText(self._format_value_text(self.get_value()))
 
     def _format_value_text(self, value: float | int) -> str:
-        """Format value for display in text field (no unit in base method)."""
+        """Format value for display in numeric text field."""
         if isinstance(value, float):
-            txt = f"{value:.{self.float_precision}f}"
+            return f"{value:.{self.float_precision}f}"
         else:
-            txt = str(value)
-        if self.unit:
-            txt += f" {self.unit}"
-        return txt
+            return str(value)

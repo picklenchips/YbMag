@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QDialog,
 )
 from PyQt6.QtCore import QStandardPaths, QDir, QFileInfo, QEvent, Qt
+from pathlib import Path
 import time
 import threading
 import cv2
@@ -225,11 +226,9 @@ class MainWindow(QMainWindow):
         """Create directory for the device state
         and make the name of the device state file.
         """
-        appdata_directory = QStandardPaths.writableLocation(
-            QStandardPaths.StandardLocation.AppDataLocation
-        )
-        QDir(appdata_directory).mkpath(".")
-        self.device_file = appdata_directory + "/stillimagehdr.json"
+        settings_dir = Path(__file__).parent / "settings"
+        settings_dir.mkdir(exist_ok=True)
+        self.device_file = str(settings_dir / "stillimagehdr.json")
 
     def on_select_device(self):
         """Show the IC 4 device selection dialog."""
