@@ -34,8 +34,8 @@ class PropertyTreeNode:
         display_name: str,
     ):
         self.parent_ = parent
-        self.prop_: Optional[Property] = prop
-        self.prop_type_ = prop_type
+        self.prop_ = prop
+        self.prop_type = prop_type
         self.row_ = row
         self.prop_name_ = prop_name
         self.display_name_ = display_name
@@ -44,7 +44,7 @@ class PropertyTreeNode:
         self.prev_available_ = False
 
     def __del__(self):
-        if self.notification_token_:
+        if self.notification_token_ and self.prop_:
             try:
                 self.prop_.event_remove_notification(self.notification_token_)
             except Exception:
@@ -130,6 +130,20 @@ class PropertyTreeNode:
         except Exception:
             pass
 
+    def clear(self):
+        """Unregister notifications, recurse into children, and drop property reference."""
+        if self.notification_token_ is not None:
+            try:
+                self.prop_.event_remove_notification(self.notification_token_)
+            except Exception:
+                pass
+            self.notification_token_ = None
+        for child in self.children_:
+            child.clear()
+        self.children_.clear()
+        self.parent_ = None
+        del self.prop_
+
     def is_category(self) -> bool:
         """Check if node is a category"""
         return isinstance(self.prop_, PropCategory)
@@ -196,30 +210,11 @@ class PropertyTreeModel(QAbstractItemModel):
         prevent ref-count collection and __del__ fires too late.
         """
         self.beginResetModel()
-        self._clear_node(self.tree_root_)
+        if self.tree_root_ is not None:
+            self.tree_root_.clear()
         self.tree_root_ = None
         self.prop_root_ = None
         self.endResetModel()
-
-    @staticmethod
-    def _clear_node(node: Optional["PropertyTreeNode"]):
-        """Recursively unregister notifications and drop property references."""
-        if node is None:
-            return
-        # Unregister property notification
-        if node.notification_token_ is not None:
-            try:
-                node.prop.event_remove_notification(node.notification_token_)
-            except Exception:
-                pass
-            node.notification_token_ = None
-        # Recurse into children
-        for child in node.children_:
-            PropertyTreeModel._clear_node(child)
-        # Break reference cycle and release Property / PropCategory handles
-        node.children_.clear()
-        node.parent_ = None
-        node.prop_ = None
 
     def rootIndex(self) -> QModelIndex:
         """Get index of root item"""
@@ -240,19 +235,19 @@ class PropertyTreeModel(QAbstractItemModel):
         if not self.hasIndex(row, column, parent):
             return QModelIndex()
 
-        parent_item = self._parent_item(parent)
-        child_item = parent_item.child(row)
+        if not (parent_item := self._parent_item(parent)):
+            return QModelIndex()
 
-        if child_item:
-            # Register notification handler
-            def item_changed(item):
-                item_index = self.createIndex(item.row, 0, item)
-                self.dataChanged.emit(item_index, item_index)
+        if not (child_item := parent_item.child(row)):
+            return QModelIndex()
 
-            child_item.register_notification_once(item_changed)
-            return self.createIndex(row, column, child_item)
+        # Register notification handler
+        def item_changed(item):
+            item_index = self.createIndex(item.row, 0, item)
+            self.dataChanged.emit(item_index, item_index)
 
-        return QModelIndex()
+        child_item.register_notification_once(item_changed)
+        return self.createIndex(row, column, child_item)
 
     def parent(self, index: QModelIndex) -> QModelIndex:
         """Get parent index"""
@@ -273,6 +268,9 @@ class PropertyTreeModel(QAbstractItemModel):
             return 0
 
         parent_item = self._parent_item(parent)
+        if not parent_item:
+            print("warning: no parent, but not root since column is {parent.column()}")
+            return 0  # we should never get
         return parent_item.num_children()
 
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
@@ -358,6 +356,19 @@ class FilterPropertiesProxy(QSortFilterProxyModel):
             return False
 
         try:
+            # Debug: Log enumeration properties filtering
+            if child.prop_type == PropertyType.ENUMERATION:
+                prop_name = child.display_name
+                is_available = child.prop.is_available
+                visibility = child.prop.visibility
+                name_match = (
+                    self.filter_regex_.match(child.display_name).hasMatch()
+                    or self.filter_regex_.match(child.prop_name).hasMatch()
+                )
+                print(
+                    f"Debug Filter: ENUM '{prop_name}' - available={is_available}, visibility={visibility}, name_match={name_match}, threshold={self.visibility_}"
+                )
+
             if not child.prop.is_available:
                 return False
 
@@ -376,5 +387,14 @@ class FilterPropertiesProxy(QSortFilterProxyModel):
                 return self.filter_func_(child.prop)
 
             return True
-        except Exception:
+        except Exception as e:
+            # Log exceptions in filtering
+            prop_name = "<unknown>"
+            try:
+                prop_name = child.display_name
+            except Exception:
+                pass
+            print(
+                f"Warning: Exception in filterAcceptsRow for property '{prop_name}': {type(e).__name__}: {e}"
+            )
             return False

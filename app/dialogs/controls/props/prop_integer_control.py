@@ -223,9 +223,12 @@ class PropIntegerControl(PropControlBase):
             if self.spin:
                 layout.addWidget(self.spin)
                 if isinstance(layout, QBoxLayout):
-                    layout.setStretchFactor(self.spin, 0)
+                    # Stretch spin to fill when standalone; keep compact next to slider
+                    layout.setStretchFactor(self.spin, 0 if self.slider else 1)
             if self.edit:
                 layout.addWidget(self.edit)
+                if isinstance(layout, QBoxLayout):
+                    layout.setStretchFactor(self.edit, 1)
 
     def eventFilter(self, watched, event):
         if event.type() == QEvent.Type.FocusIn:

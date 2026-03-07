@@ -499,6 +499,11 @@ class MainWindow(QMainWindow):
         self.updateControls()
 
     def closeEvent(self, ev: QCloseEvent):
+        """Handle window close event - make sure to stop streaming and close device cleanly."""
+        # Stop the statistics timer first to prevent callbacks after cleanup
+        if hasattr(self, "update_statistics_timer"):
+            self.update_statistics_timer.stop()
+
         if self.grabber.is_streaming:
             self.grabber.stream_stop()
 
@@ -508,12 +513,20 @@ class MainWindow(QMainWindow):
         # Clear property dialog models so PropertyMap refs are released
         # before the Library context is torn down
         if self.property_dialog is not None:
+            # Clear all IC4 object references first
+            self.property_dialog.clear_all()
             # Close the dialog if it's still visible
             if self.property_dialog.isVisible():
                 self.property_dialog.close()
-            # Clear all IC4 object references
-            self.property_dialog.clear_all()
             self.property_dialog = None
+
+        # Clear device selection dialog so DeviceInfo / Interface / PropertyMap
+        # refs are released before the Library context is torn down.
+        if self.device_selection_dialog is not None:
+            self.device_selection_dialog.clear_all()
+            if self.device_selection_dialog.isVisible():
+                self.device_selection_dialog.close()
+            self.device_selection_dialog = None
 
         # Cleanup rotary motor dialog (disconnects motor)
         if self.rotary_motor_dialog is not None:
@@ -526,6 +539,13 @@ class MainWindow(QMainWindow):
             self.digilent_dialog.cleanup()
             self.digilent_dialog.close()
             self.digilent_dialog = None
+
+        # Explicitly clean up IC4 objects *before* Library context closes
+        # This prevents "Library.init was not called" errors in __del__ methods
+        del self.display
+        del self.video_writer
+        del self.sink
+        del self.grabber
 
         # Force cyclic GC so PropertyMap / Property pointers wrapped by
         # PropertyTreeNode (which have parent<->children cycles) are freed
@@ -578,6 +598,8 @@ class MainWindow(QMainWindow):
     def _onDeviceSelectionClosed(self):
         """Handle device selection dialog closed"""
         self.camera_label.setChecked(False)
+        if self.device_selection_dialog is not None:
+            self.device_selection_dialog.clear_all()
         self.device_selection_dialog = None
 
     def onDeviceProperties(self):
@@ -937,7 +959,7 @@ class MainWindow(QMainWindow):
         # 3. Restart the stream with new ROI settings
 
     def onUpdateStatisticsTimer(self):
-        if not self.grabber.is_device_valid:
+        if self.grabber is None or not self.grabber.is_device_valid:
             return
 
         try:

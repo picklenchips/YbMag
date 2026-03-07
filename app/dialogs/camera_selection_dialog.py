@@ -1,7 +1,9 @@
 """
-Device selection dialog
+IC4 device selection dialog
 Simplified translation from C++ DeviceSelectionDialog.h/cpp
 """
+
+import gc
 
 from PyQt6.QtCore import Qt, QEvent, QSize
 from PyQt6.QtWidgets import (
@@ -54,15 +56,25 @@ class DeviceSelectionDialog(QDialog):
         self.filter_func = filter_func
         self.enumerator = DeviceEnum()
         self.resource_selector = resource_selector
+        self._is_cleaned = False
+        self._device_list_changed_callback = None
+        self._device_list_changed_token = None
 
         self._create_ui()
         self._on_refresh()
 
         # Register for device list changes
         try:
-            self.enumerator.event_add_device_list_changed(
-                lambda enum: QApplication.postEvent(
+            self._device_list_changed_callback = lambda _enum: (
+                QApplication.postEvent(
                     self, QEvent(DeviceSelectionDialog.EVENT_DEVICE_LIST_CHANGED)
+                )
+                if not self._is_cleaned
+                else None
+            )
+            self._device_list_changed_token = (
+                self.enumerator.event_add_device_list_changed(
+                    self._device_list_changed_callback
                 )
             )
         except Exception:
@@ -70,8 +82,66 @@ class DeviceSelectionDialog(QDialog):
 
     def customEvent(self, event: QEvent):
         """Handle custom events"""
+        if self._is_cleaned:
+            return
         if event.type() == DeviceSelectionDialog.EVENT_DEVICE_LIST_CHANGED:
             self._on_refresh()
+
+    def closeEvent(self, event):
+        """Ensure IC4 references are released before app/library shutdown."""
+        self.clear_all()
+        super().closeEvent(event)
+
+    def _unregister_device_list_callback(self):
+        """Best-effort callback unregister for SDK/version differences."""
+        enum = self.enumerator
+        if enum is None:
+            return
+
+        token = self._device_list_changed_token
+        callback = self._device_list_changed_callback
+
+        for method_name, arg in (
+            ("event_remove_device_list_changed", token),
+            ("event_remove_device_list_changed", callback),
+            ("event_remove_notification", token),
+            ("event_remove_notification", callback),
+        ):
+            if arg is None:
+                continue
+            try:
+                method = getattr(enum, method_name)
+            except Exception:
+                continue
+            try:
+                method(arg)
+                break
+            except Exception:
+                continue
+
+    def clear_all(self):
+        """Release all references to IC4 objects held by this dialog."""
+        if self._is_cleaned:
+            return
+        self._is_cleaned = True
+
+        self._unregister_device_list_callback()
+        self._device_list_changed_token = None
+        self._device_list_changed_callback = None
+
+        # Drop all DeviceInfo / Interface / PropertyMap references in item data.
+        self.camera_tree.clear()
+
+        self._clear_info_group(self.interface_info_group)
+        self._clear_info_group(self.device_info_group)
+        self.interface_info_group.setVisible(False)
+        self.device_info_group.setVisible(False)
+
+        self.enumerator = None
+        self.filter_func = None
+
+        # Collect cycles while Library.init_context is still active.
+        gc.collect()
 
     def _create_ui(self):
         """Create the dialog UI"""
@@ -294,6 +364,9 @@ class DeviceSelectionDialog(QDialog):
 
     def _on_refresh(self):
         """Refresh device list"""
+        if self._is_cleaned or self.enumerator is None:
+            return
+
         # Save current selection
         previous_data = None
         current = self.camera_tree.currentItem()

@@ -74,5 +74,16 @@ def create_prop_control(
 
         return widget
 
-    except Exception:
+    except Exception as e:
+        # Log the error to help diagnose control creation failures
+        prop_name = "<unknown>"
+        prop_type = "<unknown>"
+        try:
+            prop_name = prop.name if hasattr(prop, "name") else "<no name>"
+            prop_type = prop.type.name if hasattr(prop.type, "name") else str(prop.type)
+        except Exception:
+            pass
+        print(
+            f"Warning: Failed to create control for property '{prop_name}' (type: {prop_type}): {type(e).__name__}: {e}"
+        )
         return None

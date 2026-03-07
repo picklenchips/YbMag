@@ -207,10 +207,15 @@ class _ConnectionWidget(QWidget):
         layout.addWidget(self._status_label)
 
     def refresh_devices(self) -> None:
+        print("[DigilentDialog] refresh_devices called")
         self._device_combo.clear()
         try:
             self._devices = enumerate_devices()
-        except Exception:
+            print(
+                f"[DigilentDialog] enumerate_devices returned {len(self._devices)} device(s): {self._devices}"
+            )
+        except Exception as e:
+            print(f"[DigilentDialog] enumerate_devices exception: {e}")
             self._devices = []
 
         if not self._devices:
@@ -229,7 +234,8 @@ class _ConnectionWidget(QWidget):
         self._device_combo.setCurrentIndex(select_idx)
 
     def _on_connect_clicked(self) -> None:
-        self._connect_btn.click()  # prevent double-click
+        print("[DigilentDialog] _on_connect_clicked fired")
+        self._connect_btn.setEnabled(False)  # prevent double-click
         self.connected.emit(True)
 
     def selected_device_index(self) -> int:
@@ -243,6 +249,7 @@ class _ConnectionWidget(QWidget):
         return ""
 
     def set_connected(self, is_connected: bool) -> None:
+        self._connect_btn.setEnabled(True)
         if is_connected:
             self._status_label.setText("\u25cf Connected")
             self._status_label.setStyleSheet("color: #4caf50; font-weight: bold;")
@@ -1351,6 +1358,7 @@ class DigilentDialog(QDialog):
     # -- Connection --
 
     def _on_connect_toggle(self, _: bool) -> None:
+        print(f"[DigilentDialog] _on_connect_toggle, is_connected={self._is_connected}")
         if self._is_connected:
             self._disconnect()
         else:
@@ -1358,15 +1366,25 @@ class DigilentDialog(QDialog):
 
     def _connect(self) -> None:
         idx = self._connection.selected_device_index()
+        print(f"[DigilentDialog] _connect called, selected device index={idx}")
         if idx < 0:
+            print("[DigilentDialog] _connect: no device selected (idx < 0), aborting")
             return
 
         try:
+            print(f"[DigilentDialog] creating Digilent(device_index={idx})")
             self._digilent = Digilent(device_index=idx)
+            print(f"[DigilentDialog] calling Digilent.open({idx})")
             self._digilent.open(idx)
+            print(
+                f"[DigilentDialog] open() succeeded, hdwf={self._digilent._hdwf.value}"
+            )
             self._is_connected = True
             self._connection.set_connected(True)
             self._status_bar.set_clock(self._digilent._internal_clock_hz)
+            print(
+                f"[DigilentDialog] connected, clock={self._digilent._internal_clock_hz} Hz"
+            )
 
             # Save last device serial
             serial = self._connection.selected_serial()
@@ -1374,18 +1392,22 @@ class DigilentDialog(QDialog):
                 settings = _load_settings()
                 settings.setdefault("digilent", {})["last_device_serial"] = serial
                 _save_settings(settings)
+                print(f"[DigilentDialog] saved last_device_serial={serial}")
 
         except Exception as e:
+            print(f"[DigilentDialog] _connect exception: {e}")
             QMessageBox.critical(self, "Connection Error", str(e))
             self._digilent = None
 
     def _disconnect(self) -> None:
+        print("[DigilentDialog] _disconnect called")
         if self._digilent:
             try:
                 self._digilent.stop()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[DigilentDialog] stop() exception (ignored): {e}")
             self._digilent.close()
+            print("[DigilentDialog] device closed")
             self._digilent = None
         self._is_connected = False
         self._connection.set_connected(False)
@@ -1429,14 +1451,19 @@ class DigilentDialog(QDialog):
         try:
             d = self._digilent
             if not d:
+                print("[DigilentDialog] _start_worker: no device")
                 return
+            print("[DigilentDialog] _start_worker: configuring channels")
             configs = self._channel_panel.get_all_configs()
             d.configure_all_digital(configs)
             d.set_trigger_source(self._global_controls.trigger_source_index)
             d.set_repeat_count(self._global_controls.repeat_count)
+            print("[DigilentDialog] _start_worker: starting")
             d.start()
             self._poll_signals.pattern_status.emit()
+            print("[DigilentDialog] _start_worker: started successfully")
         except Exception as e:
+            print(f"[DigilentDialog] _start_worker exception: {e}")
             self._poll_signals.error.emit(str(e))
 
     def _on_stop(self) -> None:
@@ -1506,6 +1533,7 @@ class DigilentDialog(QDialog):
             return
         self._poll_busy = True
         self._executor.submit(self._poll_worker)
+        print("[DigilentDialog] poll submitted", end="\r")
 
     def _poll_worker(self) -> None:
         try:
@@ -1522,6 +1550,7 @@ class DigilentDialog(QDialog):
                             self._latest_scope_data[ch] = acq
                             self._poll_signals.scope_data.emit(ch)
         except Exception as e:
+            print(f"[DigilentDialog] poll_worker exception: {e}")
             self._poll_signals.error.emit(str(e))
         finally:
             self._poll_busy = False

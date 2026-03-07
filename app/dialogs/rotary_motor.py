@@ -784,6 +784,13 @@ class RotaryMotorDialog(QDialog):
     def _on_connected(self) -> None:
         """Handle successful connection."""
         assert self._motor is not None  # Type guard
+        port = self._motor._port
+        if port is not self._port:
+            self._port = port
+            # save to settings.json
+            settings = _load_settings()
+            settings["port"] = port
+            _save_settings(settings)
         self._is_connected = True
         self.connection_status.setText(f"Connected — {self._motor.serial_number}")
         self.connection_status.setStyleSheet("font-weight: bold; color: #4caf50;")

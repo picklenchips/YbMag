@@ -3,7 +3,7 @@ Property tree widget
 Translated from C++ PropertyTreeWidget.h/cpp
 """
 
-from PyQt6.QtCore import Qt, QRect, QModelIndex, QItemSelection, QSize
+from PyQt6.QtCore import Qt, QRect, QModelIndex, QItemSelection
 from PyQt6.QtWidgets import (
     QWidget,
     QTreeView,
@@ -72,34 +72,66 @@ class PropertyTreeItemDelegate(QStyledItemDelegate):
         """Update grabber reference"""
         self.grabber_ = grabber
 
+    def paint(self, painter: QPainter, option, index):
+        """Paint category rows with grey background to match column 0"""
+        source_index = self.proxy_.mapToSource(index)
+        tree = source_index.internalPointer()
+        if tree and len(tree.children) > 0:
+            painter.save()
+            widget = option.widget
+            if widget:
+                painter.fillRect(option.rect, widget.palette().mid())
+            painter.restore()
+        else:
+            super().paint(painter, option, index)
+
+    def updateEditorGeometry(self, editor, option, index):
+        """Ensure editor fills the full cell rect"""
+        editor.setGeometry(option.rect)
+
     def createEditor(self, parent: QWidget, option, index) -> Optional[QWidget]:
         """Create editor widget for property"""
         source_index = self.proxy_.mapToSource(index)
         tree = source_index.internalPointer()
 
-        if not tree:
-            return None
+        if not tree or len(tree.children) > 0:
+            return None  # No editor for categories; paint() handles their background
 
-        widget = create_prop_control(
-            tree.prop, parent, self.grabber_, self.restart_filter_, self.prop_selected_
-        )
-
-        if widget:
-            widget.setContentsMargins(0, 0, 2, 0)  # Minimal right margin
-            # Ensure widget expands to fill available width
-            from PyQt6.QtWidgets import QSizePolicy
-
-            widget.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        try:
+            widget = create_prop_control(
+                tree.prop,
+                parent,
+                self.grabber_,
+                self.restart_filter_,
+                self.prop_selected_,
             )
 
-        return widget
+            if widget:
+                widget.setContentsMargins(0, 0, 8, 0)  # Match C++ right margin
+            else:
+                # Log when no widget was created
+                prop_name = "<unknown>"
+                try:
+                    prop_name = (
+                        tree.prop.name if hasattr(tree.prop, "name") else "<no name>"
+                    )
+                except Exception:
+                    pass
+                print(f"Debug: No editor widget created for property '{prop_name}'")
 
-    def sizeHint(self, option, index) -> QSize:
-        """Return appropriate size for editor widgets (especially compound controls)"""
-        # Return fixed height only; width is handled by size policy expansion
-        # Widgets are set to QSizePolicy.Expanding which makes them stretch to fill
-        return QSize(0, 48)  # Width of 0 lets the widget use its expanding policy
+            return widget
+        except Exception as e:
+            prop_name = "<unknown>"
+            try:
+                prop_name = (
+                    tree.prop.name if hasattr(tree.prop, "name") else "<no name>"
+                )
+            except Exception:
+                pass
+            print(
+                f"Error: Exception in createEditor for property '{prop_name}': {type(e).__name__}: {e}"
+            )
+            return None
 
 
 class TestItemDelegateForPaint(QStyledItemDelegate):
@@ -136,11 +168,26 @@ class PropertyTreeView(QTreeView):
         self.proxy_ = proxy
 
     def mousePressEvent(self, event: QMouseEvent):
-        """Handle mouse press to toggle expansion"""
+        """Handle mouse press to toggle expansion for category rows.
+
+        Only toggle when clicking on column 0 or on category rows (which have
+        no persistent editor in column 1).  Clicks on column-1 leaf rows must
+        pass through to the persistent editor widget.
+        """
         index = self.indexAt(event.pos())
+        if not index.isValid():
+            super().mousePressEvent(event)
+            return
+
+        source_index = self.proxy_.mapToSource(index)
+        tree = source_index.internalPointer()
+        is_category = tree and len(tree.children) > 0
+
         last_state = self.isExpanded(index)
         super().mousePressEvent(event)
-        if index.isValid() and last_state == self.isExpanded(index):
+
+        # Only toggle expand/collapse for category rows
+        if is_category and last_state == self.isExpanded(index):
             self.setExpanded(index, not last_state)
 
     def drawBranches(self, painter: QPainter, rect: QRect, index):
@@ -274,15 +321,10 @@ class PropertyTreeWidget(QWidget):
         self.view_.setItemDelegateForColumn(0, self.branch_paint_delegate_)
         self.view_.setItemDelegateForColumn(1, self.delegate_)
 
-        # Set uniform row height to accommodate editors
-        # Delegate's sizeHint() will determine the actual row height
-        self.view_.setUniformRowHeights(True)
-
         # Connect signals
         self.view_.clicked.connect(self._prop_selected)
         if sel_model := self.view_.selectionModel():
             sel_model.selectionChanged.connect(self._prop_selection_changed)
-        self.proxy_.dataChanged.connect(self._proxy_data_changed)
         self.proxy_.layoutChanged.connect(self._proxy_layout_changed)
 
         # Layout: splitter or just tree
@@ -362,16 +404,7 @@ class PropertyTreeWidget(QWidget):
         self.view_.setEnabled(source_available)
 
         if source_available:
-            if header := self.view_.header():
-                header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-                header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-                header.setStretchLastSection(True)
-            self.view_.setItemDelegateForColumn(0, self.branch_paint_delegate_)
-            self.view_.setItemDelegateForColumn(1, self.delegate_)
             self.view_.resizeColumnToContents(0)
-
-    def _proxy_data_changed(self, *args):
-        self._update_view()
 
     def _proxy_layout_changed(self, *args):
         self._update_view()

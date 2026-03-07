@@ -30,6 +30,10 @@ class PropCommandControl(PropControlBase):
 
         if layout := self.layout():
             layout.addWidget(self.button)
+            from PyQt6.QtWidgets import QBoxLayout
+
+            if isinstance(layout, QBoxLayout):
+                layout.setStretchFactor(self.button, 1)
 
     def _on_execute(self):
         """Execute the command (matches C++ execute)"""

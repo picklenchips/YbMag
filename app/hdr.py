@@ -30,10 +30,12 @@ from imagingcontrol4.imagetype import ImageType, PixelFormat
 from imagingcontrol4.library import Library
 from imagingcontrol4.ic4exception import IC4Exception
 
-from app.dialogs.display import DisplayWidget
-from dialogs.device_selection_dialog import DeviceSelectionDialog
-from dialogs.property_dialog import PropertyDialog
-from dialogs.controls.basic_slider import BasicSlider
+from dialogs import (
+    DisplayWidget,
+    DeviceSelectionDialog,
+    PropertyDialog,
+)
+from dialogs.controls import BasicSlider
 
 DEVICE_LOST_EVENT = QEvent.Type(QEvent.Type.User + 1)
 

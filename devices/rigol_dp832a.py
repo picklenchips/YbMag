@@ -4,8 +4,7 @@ Pure-Python driver for one or more Rigol DP832A DC power supplies.
 No Qt dependency — safe to use from scripts, notebooks, and tests.
 Thread-safe: every SCPI transaction is guarded by a per-instrument lock.
 
-Reference: Rigol DP800 Programming Guide
-https://www.batronix.com/pdf/Rigol/ProgrammingGuide/DP800_ProgrammingGuide_EN.pdf
+Reference: [Rigol DP800 Programming Guide](https://www.batronix.com/pdf/Rigol/ProgrammingGuide/DP800_ProgrammingGuide_EN.pdf)
 """
 
 from __future__ import annotations
@@ -45,7 +44,7 @@ class ChannelInfo:
 
 
 class RigolDP832A:
-    """Thread-safe, Qt-free pyvisa wrapper for one Rigol DP832A supply."""
+    """Thread-safe pyvisa wrapper for one Rigol DP832A supply."""
 
     # DP832A has 3 channels: CH1 (32 V/3.2 A), CH2 (32 V/3.2 A), CH3 (5.3 V/3.2 A)
     NUM_CHANNELS = 3

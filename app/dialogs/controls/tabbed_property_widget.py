@@ -223,10 +223,6 @@ class TabbedPropertyWidget(QWidget):
         view.setItemDelegateForColumn(0, paint_del)
         view.setItemDelegateForColumn(1, editor_del)
 
-        # Set uniform row height to accommodate editors
-        # Delegate's sizeHint() will determine the actual row height
-        view.setUniformRowHeights(True)
-
         # Show children of the category (skip root wrapper node)
         root_idx = model.rootIndex()
         if root_idx.isValid():
@@ -246,10 +242,8 @@ class TabbedPropertyWidget(QWidget):
                 )
             )
 
-        # Model changes → refresh that tab's view
-        proxy.dataChanged.connect(
-            lambda *_a, v=view, p=proxy, m=model: self._refresh_view(v, p, m)
-        )
+        # Layout changes → refresh that tab's view (NOT dataChanged, which
+        # would destroy persistent editors on every property notification)
         proxy.layoutChanged.connect(
             lambda *_a, v=view, p=proxy, m=model: self._refresh_view(v, p, m)
         )

@@ -142,7 +142,8 @@ class PropFloatControl(PropControlBase):
                 from PyQt6.QtWidgets import QBoxLayout
 
                 if isinstance(layout, QBoxLayout):
-                    layout.setStretchFactor(self.spin, 0)
+                    # Stretch spin to fill when standalone; keep compact next to slider
+                    layout.setStretchFactor(self.spin, 0 if self.slider else 1)
 
     @staticmethod
     def text_from_value(value: float, notation=None, precision: int = 6) -> str:

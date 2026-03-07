@@ -1,55 +1,327 @@
 """
 Digilent Analog Discovery 2 driver.
 
-Multi-channel digital pattern generation and analog scope acquisition via the
-Digilent Waveforms SDK (dwf.dll / libdwf.so) using ctypes.
+Thread-safe, Qt-free driver wrapping the Digilent Waveforms SDK
+(dwf.dll / libdwf.so) via ctypes.  Supports multi-channel digital pattern
+generation, analog scope acquisition, and cross-domain (scope -> digital)
+triggering.
 
-Zero Qt dependency — suitable for scripts, REPL, and GUI wrappers alike.
+Low-level SDK communication follows patterns established by the WF_SDK
+reference library (waveforms/WF_SDK/), with added thread safety via a
+per-device lock and typed ctypes declarations (argtypes/restype) for all
+SDK functions to prevent silent 32-bit truncation.
 """
 
 from __future__ import annotations
 
 import ctypes
+import math
 import os
+import sys
 import threading
 import time
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
 
 # ---------------------------------------------------------------------------
-# DWF SDK constants (from dwf.h)
+# DWF SDK loading  (refs: WF_SDK/device.py, WF_SDK/pattern.py)
+# ---------------------------------------------------------------------------
+
+if sys.platform.startswith("win"):
+    _dwf = ctypes.cdll.dwf
+    _constants_path = os.path.join(
+        "C:" + os.sep,
+        "Program Files (x86)",
+        "Digilent",
+        "WaveFormsSDK",
+        "samples",
+        "py",
+    )
+elif sys.platform.startswith("darwin"):
+    _dwf = ctypes.cdll.LoadLibrary("/Library/Frameworks/dwf.framework/dwf")
+    _constants_path = os.path.join(
+        "/Applications",
+        "WaveForms.app",
+        "Contents",
+        "Resources",
+        "SDK",
+        "samples",
+        "py",
+    )
+else:
+    _dwf = ctypes.cdll.LoadLibrary("libdwf.so")
+    _constants_path = os.path.join(
+        "/usr", "share", "digilent", "waveforms", "samples", "py"
+    )
+
+if _constants_path not in sys.path:
+    sys.path.append(_constants_path)
+import dwfconstants as _c  # type: ignore[import-untyped]
+
+# ---------------------------------------------------------------------------
+# Constant extraction helper
+# ---------------------------------------------------------------------------
+
+
+def _cval(c) -> int:
+    """Extract int from a dwfconstants ctypes constant (c_ubyte / c_int)."""
+    return int(c.value) if hasattr(c, "value") else int(c)
+
+
+# ---------------------------------------------------------------------------
+# Public constants  (refs: WF_SDK/pattern.py, WF_SDK/scope.py)
 # ---------------------------------------------------------------------------
 
 # Trigger sources
-TRIGSRC_NONE = 0
-TRIGSRC_PC = 1
-TRIGSRC_DETECT_POS = 2
-TRIGSRC_DETECT_NEG = 3
-TRIGSRC_ANALOG_IN = 4
-TRIGSRC_DIGITAL_IN = 5
-TRIGSRC_DIGITAL_OUT = 6
-TRIGSRC_EXTERNAL_1 = 8
-TRIGSRC_EXTERNAL_2 = 9
+TRIGSRC_NONE = _cval(_c.trigsrcNone)
+TRIGSRC_PC = _cval(_c.trigsrcPC)
+TRIGSRC_ANALOG_IN = _cval(_c.trigsrcDetectorAnalogIn)  # scope trigger detector
+TRIGSRC_DIGITAL_IN = _cval(_c.trigsrcDetectorDigitalIn)  # logic trigger detector
+TRIGSRC_DIGITAL_OUT = _cval(_c.trigsrcDigitalOut)
+TRIGSRC_EXTERNAL_1 = _cval(_c.trigsrcExternal1)
+TRIGSRC_EXTERNAL_2 = _cval(_c.trigsrcExternal2)
 
-# Digital‑out types
-_DWFDIGITALOUT_TYPE_PULSE = 1
+# ---------------------------------------------------------------------------
+# Private constants
+# ---------------------------------------------------------------------------
 
-# Digital‑out idle levels
-_DWFDIGITALOUT_IDLE_LOW = 0
-_DWFDIGITALOUT_IDLE_HIGH = 1
+# Instrument states  (refs: WF_SDK/scope.py DwfStateDone)
+_DWF_STATE_READY = 0
+_DWF_STATE_ARMED = 1
+_DWF_STATE_DONE = 2
+_DWF_STATE_RUNNING = 3  # also "triggered"
 
-# Instrument states
-_DWFSTATE_READY = 0
-_DWFSTATE_ARMED = 1
-_DWFSTATE_DONE = 2
-_DWFSTATE_RUNNING = 3
-_DWFSTATE_TRIGGERED = 3  # alias used in some contexts
+# Digital-out type  (ref: WF_SDK/pattern.py function.pulse)
+_DIGOUT_TYPE_PULSE = _cval(_c.DwfDigitalOutTypePulse)
 
-# Trigger conditions
-_TRIGCOND_RISING = 0
-_TRIGCOND_FALLING = 1
+# Digital-out idle  (ref: WF_SDK/pattern.py idle_state)
+_IDLE_INIT = _cval(_c.DwfDigitalOutIdleInit)
+_IDLE_LOW = _cval(_c.DwfDigitalOutIdleLow)
+_IDLE_HIGH = _cval(_c.DwfDigitalOutIdleHigh)
+_IDLE_ZET = _cval(_c.DwfDigitalOutIdleZet)
+
+# Trigger conditions  (ref: WF_SDK/scope.py)
+_TRIGCOND_RISING = _cval(_c.trigcondRisingPositive)
+_TRIGCOND_FALLING = _cval(_c.trigcondFallingNegative)
+
+# Trigger type  (ref: WF_SDK/scope.py)
+_TRIGTYPE_EDGE = _cval(_c.trigtypeEdge)
+
+# Trigger slope  (ref: WF_SDK/pattern.py)
+_TRIGSLOPE_RISE = _cval(_c.DwfTriggerSlopeRise)
+_TRIGSLOPE_FALL = _cval(_c.DwfTriggerSlopeFall)
+_TRIGSLOPE_EITHER = _cval(_c.DwfTriggerSlopeEither)
+
+# Scope filter  (ref: WF_SDK/scope.py)
+_FILTER_DECIMATE = _cval(_c.filterDecimate)
+
+# ---------------------------------------------------------------------------
+# ctypes pointer aliases
+# ---------------------------------------------------------------------------
+
+_P_INT = ctypes.POINTER(ctypes.c_int)
+_P_UINT = ctypes.POINTER(ctypes.c_uint)
+_P_DOUBLE = ctypes.POINTER(ctypes.c_double)
+
+# ---------------------------------------------------------------------------
+# argtypes / restype declarations  (prevents silent truncation)
+# ---------------------------------------------------------------------------
+
+
+def _declare_signatures() -> None:
+    """Declare argtypes and restype for every DWF function used."""
+    d = _dwf
+
+    # Device management  (ref: WF_SDK/device.py)
+    d.FDwfEnum.argtypes = [ctypes.c_int, _P_INT]
+    d.FDwfEnum.restype = ctypes.c_int
+
+    d.FDwfEnumDeviceName.argtypes = [ctypes.c_int, ctypes.c_char_p]
+    d.FDwfEnumDeviceName.restype = ctypes.c_int
+
+    d.FDwfEnumSN.argtypes = [ctypes.c_int, ctypes.c_char_p]
+    d.FDwfEnumSN.restype = ctypes.c_int
+
+    d.FDwfDeviceOpen.argtypes = [ctypes.c_int, _P_INT]
+    d.FDwfDeviceOpen.restype = ctypes.c_int
+
+    d.FDwfDeviceClose.argtypes = [ctypes.c_int]
+    d.FDwfDeviceClose.restype = ctypes.c_int
+
+    d.FDwfGetLastError.argtypes = [_P_INT]
+    d.FDwfGetLastError.restype = ctypes.c_int
+
+    d.FDwfGetLastErrorMsg.argtypes = [ctypes.c_char_p]
+    d.FDwfGetLastErrorMsg.restype = ctypes.c_int
+
+    d.FDwfDeviceTriggerPC.argtypes = [ctypes.c_int]
+    d.FDwfDeviceTriggerPC.restype = ctypes.c_int
+
+    # Digital Out  (ref: WF_SDK/pattern.py)
+    d.FDwfDigitalOutReset.argtypes = [ctypes.c_int]
+    d.FDwfDigitalOutReset.restype = ctypes.c_int
+
+    d.FDwfDigitalOutInternalClockInfo.argtypes = [ctypes.c_int, _P_DOUBLE]
+    d.FDwfDigitalOutInternalClockInfo.restype = ctypes.c_int
+
+    d.FDwfDigitalOutCounterInfo.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        _P_UINT,
+    ]
+    d.FDwfDigitalOutCounterInfo.restype = ctypes.c_int
+
+    d.FDwfDigitalOutTriggerSourceSet.argtypes = [ctypes.c_int, ctypes.c_int]
+    d.FDwfDigitalOutTriggerSourceSet.restype = ctypes.c_int
+
+    d.FDwfDigitalOutTriggerSlopeSet.argtypes = [ctypes.c_int, ctypes.c_int]
+    d.FDwfDigitalOutTriggerSlopeSet.restype = ctypes.c_int
+
+    d.FDwfDigitalOutRunSet.argtypes = [ctypes.c_int, ctypes.c_double]
+    d.FDwfDigitalOutRunSet.restype = ctypes.c_int
+
+    d.FDwfDigitalOutRepeatSet.argtypes = [ctypes.c_int, ctypes.c_int]
+    d.FDwfDigitalOutRepeatSet.restype = ctypes.c_int
+
+    d.FDwfDigitalOutRepeatTriggerSet.argtypes = [ctypes.c_int, ctypes.c_int]
+    d.FDwfDigitalOutRepeatTriggerSet.restype = ctypes.c_int
+
+    d.FDwfDigitalOutEnableSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+    ]
+    d.FDwfDigitalOutEnableSet.restype = ctypes.c_int
+
+    d.FDwfDigitalOutTypeSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+    ]
+    d.FDwfDigitalOutTypeSet.restype = ctypes.c_int
+
+    d.FDwfDigitalOutIdleSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+    ]
+    d.FDwfDigitalOutIdleSet.restype = ctypes.c_int
+
+    d.FDwfDigitalOutDividerSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_uint,
+    ]
+    d.FDwfDigitalOutDividerSet.restype = ctypes.c_int
+
+    d.FDwfDigitalOutCounterSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_uint,
+        ctypes.c_uint,
+    ]
+    d.FDwfDigitalOutCounterSet.restype = ctypes.c_int
+
+    d.FDwfDigitalOutCounterInitSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_uint,
+    ]
+    d.FDwfDigitalOutCounterInitSet.restype = ctypes.c_int
+
+    d.FDwfDigitalOutConfigure.argtypes = [ctypes.c_int, ctypes.c_int]
+    d.FDwfDigitalOutConfigure.restype = ctypes.c_int
+
+    d.FDwfDigitalOutStatus.argtypes = [ctypes.c_int, _P_INT]
+    d.FDwfDigitalOutStatus.restype = ctypes.c_int
+
+    # Analog In (scope)  (ref: WF_SDK/scope.py)
+    d.FDwfAnalogInReset.argtypes = [ctypes.c_int]
+    d.FDwfAnalogInReset.restype = ctypes.c_int
+
+    d.FDwfAnalogInChannelEnableSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+    ]
+    d.FDwfAnalogInChannelEnableSet.restype = ctypes.c_int
+
+    d.FDwfAnalogInChannelRangeSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_double,
+    ]
+    d.FDwfAnalogInChannelRangeSet.restype = ctypes.c_int
+
+    d.FDwfAnalogInChannelOffsetSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_double,
+    ]
+    d.FDwfAnalogInChannelOffsetSet.restype = ctypes.c_int
+
+    d.FDwfAnalogInFrequencySet.argtypes = [ctypes.c_int, ctypes.c_double]
+    d.FDwfAnalogInFrequencySet.restype = ctypes.c_int
+
+    d.FDwfAnalogInBufferSizeSet.argtypes = [ctypes.c_int, ctypes.c_int]
+    d.FDwfAnalogInBufferSizeSet.restype = ctypes.c_int
+
+    d.FDwfAnalogInChannelFilterSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+    ]
+    d.FDwfAnalogInChannelFilterSet.restype = ctypes.c_int
+
+    d.FDwfAnalogInTriggerSourceSet.argtypes = [ctypes.c_int, ctypes.c_int]
+    d.FDwfAnalogInTriggerSourceSet.restype = ctypes.c_int
+
+    d.FDwfAnalogInTriggerTypeSet.argtypes = [ctypes.c_int, ctypes.c_int]
+    d.FDwfAnalogInTriggerTypeSet.restype = ctypes.c_int
+
+    d.FDwfAnalogInTriggerChannelSet.argtypes = [ctypes.c_int, ctypes.c_int]
+    d.FDwfAnalogInTriggerChannelSet.restype = ctypes.c_int
+
+    d.FDwfAnalogInTriggerLevelSet.argtypes = [ctypes.c_int, ctypes.c_double]
+    d.FDwfAnalogInTriggerLevelSet.restype = ctypes.c_int
+
+    d.FDwfAnalogInTriggerConditionSet.argtypes = [ctypes.c_int, ctypes.c_int]
+    d.FDwfAnalogInTriggerConditionSet.restype = ctypes.c_int
+
+    d.FDwfAnalogInTriggerPositionSet.argtypes = [ctypes.c_int, ctypes.c_double]
+    d.FDwfAnalogInTriggerPositionSet.restype = ctypes.c_int
+
+    d.FDwfAnalogInTriggerAutoTimeoutSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_double,
+    ]
+    d.FDwfAnalogInTriggerAutoTimeoutSet.restype = ctypes.c_int
+
+    d.FDwfAnalogInConfigure.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+    ]
+    d.FDwfAnalogInConfigure.restype = ctypes.c_int
+
+    d.FDwfAnalogInStatus.argtypes = [ctypes.c_int, ctypes.c_int, _P_INT]
+    d.FDwfAnalogInStatus.restype = ctypes.c_int
+
+    d.FDwfAnalogInStatusData.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_double),
+        ctypes.c_int,
+    ]
+    d.FDwfAnalogInStatusData.restype = ctypes.c_int
+
+
+_declare_signatures()
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -58,15 +330,15 @@ _TRIGCOND_FALLING = 1
 
 @dataclass
 class DigitalChannelConfig:
-    """Configuration for one digital output channel (0–15)."""
+    """Configuration for one digital output channel (0-15)."""
 
     channel: int
     enabled: bool = False
-    period: float = 1e-3
-    duty_cycle: float = 0.5
-    delay: float = 0.0
-    pulse_count: int = 0
-    idle_state: bool = False
+    period: float = 1e-3  # seconds
+    duty_cycle: float = 0.5  # fraction (0-1)
+    delay: float = 0.0  # seconds, offset from trigger/start
+    pulse_count: int = 0  # 0 = continuous
+    idle_state: bool = False  # False = LOW, True = HIGH
 
     @property
     def pulse_width(self) -> float:
@@ -77,6 +349,17 @@ class DigitalChannelConfig:
     def repetition_rate(self) -> float:
         """Frequency in Hz."""
         return 1.0 / self.period if self.period > 0 else 0.0
+
+    def __str__(self) -> str:
+        if not self.enabled:
+            return f"DIO{self.channel}: disabled"
+        return (
+            f"DIO{self.channel}("
+            f"{self.duty_cycle * 100:.1f}% @ "
+            f"{self.repetition_rate:.2f} Hz,"
+            f"{self.delay * 1e3:.1f} ms delay, "
+            f"idle={'HIGH' if self.idle_state else 'LOW'})"
+        )
 
 
 @dataclass
@@ -91,6 +374,18 @@ class ScopeChannelConfig:
     buffer_size: int = 8192
     coupling: str = "DC"
 
+    def __str__(self):
+        if not self.enabled:
+            return f"CH{self.channel}: disabled"
+        return (
+            f"CH{self.channel}: "
+            f"{self.range_volts} V, "
+            f"{self.offset_volts} V offset, "
+            f"{self.sample_rate} Hz sample rate, "
+            f"{self.buffer_size} buffer size, "
+            f"{self.coupling} coupling"
+        )
+
 
 @dataclass
 class ScopeThresholdTrigger:
@@ -102,6 +397,9 @@ class ScopeThresholdTrigger:
     digital_channel: int = -1
     response_config: Optional[DigitalChannelConfig] = None
 
+    def __str__(self):
+        return f"Threshold({'↑' if self.rising else '↓'} {self.threshold_volts} CH{self.scope_channel} -> {f' {self.response_config}' if self.response_config else f'DIO{self.digital_channel}'})"
+
 
 @dataclass(frozen=True)
 class PatternState:
@@ -111,6 +409,15 @@ class PatternState:
     channels: Tuple[DigitalChannelConfig, ...]
     elapsed_time: float
     trigger_source: str
+
+    def __str__(self):
+        status = "RUNNING" if self.running else "STOPPED"
+        return (
+            f"PatternState: {status}\n"
+            f"Elapsed time: {self.elapsed_time:.3f} s\n"
+            f"Trigger source: {self.trigger_source}\n"
+            f"Channels:\n" + "\n".join(f"  {ch}" for ch in self.channels)
+        )
 
 
 @dataclass(frozen=True)
@@ -126,187 +433,23 @@ class ScopeAcquisition:
 
 
 # ---------------------------------------------------------------------------
-# DWF SDK loader
-# ---------------------------------------------------------------------------
-
-_P_INT = ctypes.POINTER(ctypes.c_int)
-_P_DOUBLE = ctypes.POINTER(ctypes.c_double)
-
-
-def _load_dwf() -> ctypes.CDLL:
-    """Load the Digilent Waveforms SDK and declare function signatures."""
-    if os.name == "nt":
-        dwf = ctypes.cdll.LoadLibrary("dwf.dll")
-    else:
-        dwf = ctypes.cdll.LoadLibrary("libdwf.so")
-
-    # --- Device management ---
-    dwf.FDwfEnum.argtypes = [ctypes.c_int, _P_INT]
-    dwf.FDwfEnum.restype = ctypes.c_int
-
-    dwf.FDwfEnumDeviceName.argtypes = [ctypes.c_int, ctypes.c_char_p]
-    dwf.FDwfEnumDeviceName.restype = ctypes.c_int
-
-    dwf.FDwfEnumSN.argtypes = [ctypes.c_int, ctypes.c_char_p]
-    dwf.FDwfEnumSN.restype = ctypes.c_int
-
-    dwf.FDwfDeviceOpen.argtypes = [ctypes.c_int, _P_INT]
-    dwf.FDwfDeviceOpen.restype = ctypes.c_int
-
-    dwf.FDwfDeviceClose.argtypes = [ctypes.c_int]
-    dwf.FDwfDeviceClose.restype = ctypes.c_int
-
-    dwf.FDwfGetLastError.argtypes = [_P_INT]
-    dwf.FDwfGetLastError.restype = ctypes.c_int
-
-    dwf.FDwfGetLastErrorMsg.argtypes = [ctypes.c_char_p]
-    dwf.FDwfGetLastErrorMsg.restype = ctypes.c_int
-
-    dwf.FDwfDeviceTriggerPC.argtypes = [ctypes.c_int]
-    dwf.FDwfDeviceTriggerPC.restype = ctypes.c_int
-
-    # --- Digital Out ---
-    dwf.FDwfDigitalOutReset.argtypes = [ctypes.c_int]
-    dwf.FDwfDigitalOutReset.restype = ctypes.c_int
-
-    dwf.FDwfDigitalOutInternalClockInfo.argtypes = [ctypes.c_int, _P_DOUBLE]
-    dwf.FDwfDigitalOutInternalClockInfo.restype = ctypes.c_int
-
-    dwf.FDwfDigitalOutTriggerSourceSet.argtypes = [ctypes.c_int, ctypes.c_int]
-    dwf.FDwfDigitalOutTriggerSourceSet.restype = ctypes.c_int
-
-    dwf.FDwfDigitalOutRunSet.argtypes = [ctypes.c_int, ctypes.c_double]
-    dwf.FDwfDigitalOutRunSet.restype = ctypes.c_int
-
-    dwf.FDwfDigitalOutRepeatSet.argtypes = [ctypes.c_int, ctypes.c_int]
-    dwf.FDwfDigitalOutRepeatSet.restype = ctypes.c_int
-
-    dwf.FDwfDigitalOutRepeatTriggerSet.argtypes = [ctypes.c_int, ctypes.c_int]
-    dwf.FDwfDigitalOutRepeatTriggerSet.restype = ctypes.c_int
-
-    dwf.FDwfDigitalOutEnableSet.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
-    dwf.FDwfDigitalOutEnableSet.restype = ctypes.c_int
-
-    dwf.FDwfDigitalOutTypeSet.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
-    dwf.FDwfDigitalOutTypeSet.restype = ctypes.c_int
-
-    dwf.FDwfDigitalOutIdleSet.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
-    dwf.FDwfDigitalOutIdleSet.restype = ctypes.c_int
-
-    dwf.FDwfDigitalOutDividerSet.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint]
-    dwf.FDwfDigitalOutDividerSet.restype = ctypes.c_int
-
-    dwf.FDwfDigitalOutCounterSet.argtypes = [
-        ctypes.c_int,
-        ctypes.c_int,
-        ctypes.c_uint,
-        ctypes.c_uint,
-    ]
-    dwf.FDwfDigitalOutCounterSet.restype = ctypes.c_int
-
-    dwf.FDwfDigitalOutCounterInitSet.argtypes = [
-        ctypes.c_int,
-        ctypes.c_int,
-        ctypes.c_int,
-        ctypes.c_uint,
-    ]
-    dwf.FDwfDigitalOutCounterInitSet.restype = ctypes.c_int
-
-    dwf.FDwfDigitalOutConfigure.argtypes = [ctypes.c_int, ctypes.c_int]
-    dwf.FDwfDigitalOutConfigure.restype = ctypes.c_int
-
-    dwf.FDwfDigitalOutStatus.argtypes = [ctypes.c_int, _P_INT]
-    dwf.FDwfDigitalOutStatus.restype = ctypes.c_int
-
-    # --- Analog In (Scope) ---
-    dwf.FDwfAnalogInReset.argtypes = [ctypes.c_int]
-    dwf.FDwfAnalogInReset.restype = ctypes.c_int
-
-    dwf.FDwfAnalogInChannelEnableSet.argtypes = [
-        ctypes.c_int,
-        ctypes.c_int,
-        ctypes.c_int,
-    ]
-    dwf.FDwfAnalogInChannelEnableSet.restype = ctypes.c_int
-
-    dwf.FDwfAnalogInChannelRangeSet.argtypes = [
-        ctypes.c_int,
-        ctypes.c_int,
-        ctypes.c_double,
-    ]
-    dwf.FDwfAnalogInChannelRangeSet.restype = ctypes.c_int
-
-    dwf.FDwfAnalogInChannelOffsetSet.argtypes = [
-        ctypes.c_int,
-        ctypes.c_int,
-        ctypes.c_double,
-    ]
-    dwf.FDwfAnalogInChannelOffsetSet.restype = ctypes.c_int
-
-    dwf.FDwfAnalogInFrequencySet.argtypes = [ctypes.c_int, ctypes.c_double]
-    dwf.FDwfAnalogInFrequencySet.restype = ctypes.c_int
-
-    dwf.FDwfAnalogInBufferSizeSet.argtypes = [ctypes.c_int, ctypes.c_int]
-    dwf.FDwfAnalogInBufferSizeSet.restype = ctypes.c_int
-
-    dwf.FDwfAnalogInChannelFilterSet.argtypes = [
-        ctypes.c_int,
-        ctypes.c_int,
-        ctypes.c_int,
-    ]
-    dwf.FDwfAnalogInChannelFilterSet.restype = ctypes.c_int
-
-    dwf.FDwfAnalogInTriggerSourceSet.argtypes = [ctypes.c_int, ctypes.c_int]
-    dwf.FDwfAnalogInTriggerSourceSet.restype = ctypes.c_int
-
-    dwf.FDwfAnalogInTriggerChannelSet.argtypes = [ctypes.c_int, ctypes.c_int]
-    dwf.FDwfAnalogInTriggerChannelSet.restype = ctypes.c_int
-
-    dwf.FDwfAnalogInTriggerLevelSet.argtypes = [ctypes.c_int, ctypes.c_double]
-    dwf.FDwfAnalogInTriggerLevelSet.restype = ctypes.c_int
-
-    dwf.FDwfAnalogInTriggerConditionSet.argtypes = [ctypes.c_int, ctypes.c_int]
-    dwf.FDwfAnalogInTriggerConditionSet.restype = ctypes.c_int
-
-    dwf.FDwfAnalogInTriggerPositionSet.argtypes = [ctypes.c_int, ctypes.c_double]
-    dwf.FDwfAnalogInTriggerPositionSet.restype = ctypes.c_int
-
-    dwf.FDwfAnalogInTriggerAutoTimeoutSet.argtypes = [ctypes.c_int, ctypes.c_double]
-    dwf.FDwfAnalogInTriggerAutoTimeoutSet.restype = ctypes.c_int
-
-    dwf.FDwfAnalogInConfigure.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
-    dwf.FDwfAnalogInConfigure.restype = ctypes.c_int
-
-    dwf.FDwfAnalogInStatus.argtypes = [ctypes.c_int, ctypes.c_int, _P_INT]
-    dwf.FDwfAnalogInStatus.restype = ctypes.c_int
-
-    dwf.FDwfAnalogInStatusData.argtypes = [
-        ctypes.c_int,
-        ctypes.c_int,
-        ctypes.POINTER(ctypes.c_double),
-        ctypes.c_int,
-    ]
-    dwf.FDwfAnalogInStatusData.restype = ctypes.c_int
-
-    return dwf
-
-
-# ---------------------------------------------------------------------------
-# Module‑level helpers
+# Module-level helpers
 # ---------------------------------------------------------------------------
 
 
 def enumerate_devices() -> List[Dict[str, int | str]]:
-    """Return list of connected Digilent devices with name, serial, index."""
-    dwf = _load_dwf()
+    """Return list of connected Digilent devices with name, serial, index.
+
+    Uses the same enumeration pattern as WF_SDK/device.py ``open()``.
+    """
     count = ctypes.c_int()
-    dwf.FDwfEnum(ctypes.c_int(0), ctypes.byref(count))
+    _dwf.FDwfEnum(ctypes.c_int(0), ctypes.byref(count))
     devices: List[Dict[str, int | str]] = []
     for i in range(count.value):
         name = ctypes.create_string_buffer(64)
         serial = ctypes.create_string_buffer(64)
-        dwf.FDwfEnumDeviceName(ctypes.c_int(i), name)
-        dwf.FDwfEnumSN(ctypes.c_int(i), serial)
+        _dwf.FDwfEnumDeviceName(ctypes.c_int(i), name)
+        _dwf.FDwfEnumSN(ctypes.c_int(i), serial)
         devices.append(
             {
                 "index": i,
@@ -323,11 +466,10 @@ def enumerate_devices() -> List[Dict[str, int | str]]:
 
 
 class Digilent:
-    """
-    Thread-safe driver for the Digilent Analog Discovery 2.
+    """Thread-safe driver for the Digilent Analog Discovery 2.
 
     Supports multi-channel digital pattern generation, analog scope
-    acquisition, and cross-domain (scope→digital) triggering.
+    acquisition, and cross-domain (scope -> digital) triggering.
 
     Lifecycle::
 
@@ -341,7 +483,6 @@ class Digilent:
     NUM_SCOPE_CHANNELS = 2
 
     def __init__(self, device_index: int = -1) -> None:
-        self._dwf = _load_dwf()
         self._hdwf = ctypes.c_int(0)
         self._lock = threading.Lock()
         self._device_index = device_index
@@ -359,40 +500,67 @@ class Digilent:
 
         self._internal_clock_hz: float = 0.0
         self._trigger_source: int = TRIGSRC_NONE
+        self._repeat_count: int = 0
+        self._run_duration_seconds: float = 0.0
 
     # ------------------------------------------------------------------
-    # Error helpers
+    # Error helpers  (ref: WF_SDK/device.py check_error)
     # ------------------------------------------------------------------
 
     def _check_error(self) -> None:
         """Query the SDK for the last error and raise if non-zero."""
         code = ctypes.c_int()
-        self._dwf.FDwfGetLastError(ctypes.byref(code))
+        _dwf.FDwfGetLastError(ctypes.byref(code))
         if code.value != 0:
             msg = ctypes.create_string_buffer(512)
-            self._dwf.FDwfGetLastErrorMsg(msg)
+            _dwf.FDwfGetLastErrorMsg(msg)
             raise RuntimeError(f"DWF error {code.value}: {msg.value.decode()}")
 
+    def _call(self, func_name: str, *args) -> None:
+        """Invoke a DWF function and raise on failure.
+
+        DWF functions return non-zero on success, 0 on failure.
+        """
+        fn = getattr(_dwf, func_name)
+        ok = fn(*args)
+        if ok != 0:
+            return
+        try:
+            self._check_error()
+        except RuntimeError as exc:
+            raise RuntimeError(f"{func_name} failed: {exc}") from exc
+        raise RuntimeError(f"{func_name} failed")
+
+    def _require_connected(self) -> None:
+        if not self._connected or self._hdwf.value == 0:
+            raise RuntimeError("Digilent device is not connected")
+
     # ------------------------------------------------------------------
-    # Connection management
+    # Connection management  (ref: WF_SDK/device.py open/close)
     # ------------------------------------------------------------------
 
     def open(self, device_index: Optional[int] = None) -> None:
         """Open connection to a Digilent device."""
         with self._lock:
             idx = device_index if device_index is not None else self._device_index
-            self._dwf.FDwfDeviceOpen(ctypes.c_int(idx), ctypes.byref(self._hdwf))
+            print(f"[Digilent] open(device_index={idx})")
+            self._call("FDwfDeviceOpen", ctypes.c_int(idx), ctypes.byref(self._hdwf))
             if self._hdwf.value == 0:
-                szerr = ctypes.create_string_buffer(512)
-                self._dwf.FDwfGetLastErrorMsg(szerr)
+                msg = ctypes.create_string_buffer(512)
+                _dwf.FDwfGetLastErrorMsg(msg)
                 raise RuntimeError(
-                    f"Failed to open Digilent device: {szerr.value.decode()}"
+                    f"Failed to open Digilent device: {msg.value.decode()}"
                 )
             self._connected = True
+            print(f"[Digilent] device opened, hdwf={self._hdwf.value}")
 
+            # Query internal clock  (ref: WF_SDK/pattern.py)
             freq = ctypes.c_double()
-            self._dwf.FDwfDigitalOutInternalClockInfo(self._hdwf, ctypes.byref(freq))
+            self._call(
+                "FDwfDigitalOutInternalClockInfo", self._hdwf, ctypes.byref(freq)
+            )
             self._internal_clock_hz = freq.value
+            print(f"[Digilent] internal clock = {self._internal_clock_hz} Hz")
 
     @property
     def connected(self) -> bool:
@@ -402,13 +570,16 @@ class Digilent:
         """Close device handle and release resources."""
         with self._lock:
             if self._connected:
-                self._dwf.FDwfDeviceClose(self._hdwf)
+                print(f"[Digilent] close() hdwf={self._hdwf.value}")
+                self._call("FDwfDeviceClose", self._hdwf)
                 self._hdwf.value = 0
                 self._connected = False
                 self._running = False
+                print("[Digilent] device closed")
 
     # ------------------------------------------------------------------
     # Digital output — per-channel configuration
+    # (refs: WF_SDK/pattern.py generate)
     # ------------------------------------------------------------------
 
     def configure_digital_channel(self, config: DigitalChannelConfig) -> None:
@@ -418,10 +589,15 @@ class Digilent:
 
     def _configure_digital_channel_locked(self, config: DigitalChannelConfig) -> None:
         """Internal: configure a channel while the lock is already held."""
+        self._require_connected()
+        if not (0 <= config.channel < self.NUM_DIGITAL_CHANNELS):
+            raise ValueError(f"Invalid digital channel index: {config.channel}")
+
         ch = ctypes.c_int(config.channel)
 
-        self._dwf.FDwfDigitalOutEnableSet(
-            self._hdwf, ch, ctypes.c_int(int(config.enabled))
+        # Enable/disable  (ref: WF_SDK/pattern.py enable/disable)
+        self._call(
+            "FDwfDigitalOutEnableSet", self._hdwf, ch, ctypes.c_int(int(config.enabled))
         )
 
         if not config.enabled:
@@ -429,45 +605,76 @@ class Digilent:
             return
 
         # Pulse output type
-        self._dwf.FDwfDigitalOutTypeSet(
-            self._hdwf, ch, ctypes.c_int(_DWFDIGITALOUT_TYPE_PULSE)
+        self._call(
+            "FDwfDigitalOutTypeSet", self._hdwf, ch, ctypes.c_int(_DIGOUT_TYPE_PULSE)
         )
 
         # Idle level
-        idle = (
-            _DWFDIGITALOUT_IDLE_HIGH if config.idle_state else _DWFDIGITALOUT_IDLE_LOW
+        idle = _IDLE_HIGH if config.idle_state else _IDLE_LOW
+        self._call("FDwfDigitalOutIdleSet", self._hdwf, ch, ctypes.c_int(idle))
+
+        # Query counter limit for this channel  (ref: WF_SDK/pattern.py)
+        counter_limit = ctypes.c_uint()
+        self._call(
+            "FDwfDigitalOutCounterInfo",
+            self._hdwf,
+            ch,
+            ctypes.c_int(0),
+            ctypes.byref(counter_limit),
         )
-        self._dwf.FDwfDigitalOutIdleSet(self._hdwf, ch, ctypes.c_int(idle))
+        climit = counter_limit.value
 
-        # Timing: divider=1 for maximum resolution; counter for waveform shape
-        total_ticks = max(1, int(self._internal_clock_hz * config.period))
-        high_ticks = max(1, int(total_ticks * config.duty_cycle))
-        low_ticks = max(1, total_ticks - high_ticks)
+        # Timing: calculate divider to keep counter values within range
+        # (ref: WF_SDK/pattern.py divider calculation)
+        total_ticks_f = self._internal_clock_hz * config.period
+        if climit > 0:
+            divider = int(math.ceil(total_ticks_f / climit))
+        else:
+            divider = 1
+        divider = max(1, divider)
 
-        self._dwf.FDwfDigitalOutDividerSet(self._hdwf, ch, ctypes.c_uint(1))
-        self._dwf.FDwfDigitalOutCounterSet(
-            self._hdwf, ch, ctypes.c_uint(low_ticks), ctypes.c_uint(high_ticks)
+        # Counter ticks in the divided clock domain
+        total_steps = max(2, int(round(total_ticks_f / divider)))
+        high_steps = max(1, int(total_steps * config.duty_cycle))
+        low_steps = max(1, total_steps - high_steps)
+
+        self._call("FDwfDigitalOutDividerSet", self._hdwf, ch, ctypes.c_uint(divider))
+        self._call(
+            "FDwfDigitalOutCounterSet",
+            self._hdwf,
+            ch,
+            ctypes.c_uint(low_steps),
+            ctypes.c_uint(high_steps),
         )
 
         # Delay via counter initial value
         if config.delay > 0:
-            delay_ticks = int(self._internal_clock_hz * config.delay)
+            delay_ticks = int(config.delay * self._internal_clock_hz / divider)
             # Start LOW, count down delay_ticks before first pulse
-            self._dwf.FDwfDigitalOutCounterInitSet(
-                self._hdwf, ch, ctypes.c_int(0), ctypes.c_uint(delay_ticks)
+            self._call(
+                "FDwfDigitalOutCounterInitSet",
+                self._hdwf,
+                ch,
+                ctypes.c_int(0),
+                ctypes.c_uint(delay_ticks),
             )
         else:
             # Start HIGH immediately (first half cycle is the pulse)
-            self._dwf.FDwfDigitalOutCounterInitSet(
-                self._hdwf, ch, ctypes.c_int(1), ctypes.c_uint(0)
+            self._call(
+                "FDwfDigitalOutCounterInitSet",
+                self._hdwf,
+                ch,
+                ctypes.c_int(1),
+                ctypes.c_uint(0),
             )
 
         self._digital_configs[config.channel] = config
 
     def configure_all_digital(self, configs: List[DigitalChannelConfig]) -> None:
-        """Apply settings for multiple channels atomically."""
+        """Apply settings for multiple channels atomically (resets first)."""
         with self._lock:
-            self._dwf.FDwfDigitalOutReset(self._hdwf)
+            self._require_connected()
+            self._call("FDwfDigitalOutReset", self._hdwf)
             for cfg in configs:
                 self._configure_digital_channel_locked(cfg)
 
@@ -476,42 +683,91 @@ class Digilent:
     # ------------------------------------------------------------------
 
     def set_trigger_source(self, source: int = TRIGSRC_PC) -> None:
-        """Set the master trigger source for the digital pattern generator."""
+        """Set the master trigger source for the digital pattern generator.
+
+        Use the ``TRIGSRC_*`` module constants.
+        """
         with self._lock:
-            self._dwf.FDwfDigitalOutTriggerSourceSet(self._hdwf, ctypes.c_int(source))
+            self._require_connected()
+            self._call(
+                "FDwfDigitalOutTriggerSourceSet", self._hdwf, ctypes.c_int(source)
+            )
             self._trigger_source = source
 
     def set_repeat_count(self, count: int = 0) -> None:
-        """Set number of pattern repetitions. 0 = infinite."""
+        """Set number of pattern repetitions.  0 = infinite."""
         with self._lock:
-            self._dwf.FDwfDigitalOutRepeatSet(self._hdwf, ctypes.c_int(count))
+            self._require_connected()
+            self._call("FDwfDigitalOutRepeatSet", self._hdwf, ctypes.c_int(count))
+            self._repeat_count = count
 
     def set_run_duration(self, seconds: float = 0.0) -> None:
-        """Set total run duration. 0 = determined by repeat count."""
+        """Set total run duration.  0 = determined by repeat count."""
         with self._lock:
-            self._dwf.FDwfDigitalOutRunSet(self._hdwf, ctypes.c_double(seconds))
+            self._require_connected()
+            self._call("FDwfDigitalOutRunSet", self._hdwf, ctypes.c_double(seconds))
+            self._run_duration_seconds = seconds
 
     # ------------------------------------------------------------------
     # Digital output — start / stop / status
+    # (ref: WF_SDK/pattern.py generate, close)
     # ------------------------------------------------------------------
 
     def start(self) -> None:
         """Arm and start the digital pattern generator."""
         with self._lock:
-            self._dwf.FDwfDigitalOutConfigure(self._hdwf, ctypes.c_int(1))
+            self._require_connected()
+
+            # Re-apply global settings (they may be cleared by DigitalOutReset)
+            self._call(
+                "FDwfDigitalOutTriggerSourceSet",
+                self._hdwf,
+                ctypes.c_int(self._trigger_source),
+            )
+            self._call(
+                "FDwfDigitalOutRepeatSet", self._hdwf, ctypes.c_int(self._repeat_count)
+            )
+            self._call(
+                "FDwfDigitalOutRunSet",
+                self._hdwf,
+                ctypes.c_double(self._run_duration_seconds),
+            )
+
+            # Repeat-trigger: re-arm on each trigger event when using
+            # an external trigger source  (ref: WF_SDK/pattern.py)
+            repeat_trigger = 1 if self._trigger_source != TRIGSRC_NONE else 0
+            self._call(
+                "FDwfDigitalOutRepeatTriggerSet",
+                self._hdwf,
+                ctypes.c_int(repeat_trigger),
+            )
+
+            # Default to rising-edge trigger slope when trigger is active
+            if self._trigger_source != TRIGSRC_NONE:
+                self._call(
+                    "FDwfDigitalOutTriggerSlopeSet",
+                    self._hdwf,
+                    ctypes.c_int(_TRIGSLOPE_RISE),
+                )
+
+            self._call("FDwfDigitalOutConfigure", self._hdwf, ctypes.c_int(1))
             self._running = True
             self._start_time = time.monotonic()
 
     def stop(self) -> None:
         """Stop the digital pattern generator."""
         with self._lock:
-            self._dwf.FDwfDigitalOutConfigure(self._hdwf, ctypes.c_int(0))
+            if not self._connected:
+                self._running = False
+                return
+            self._call("FDwfDigitalOutConfigure", self._hdwf, ctypes.c_int(0))
             self._running = False
 
     def trigger(self) -> None:
         """Send a software trigger (when trigger source is PC)."""
         with self._lock:
-            self._dwf.FDwfDeviceTriggerPC(self._hdwf)
+            self._require_connected()
+            self._call("FDwfDeviceTriggerPC", self._hdwf)
 
     @property
     def is_running(self) -> bool:
@@ -520,8 +776,8 @@ class Digilent:
             if not self._connected:
                 return False
             sts = ctypes.c_int()
-            self._dwf.FDwfDigitalOutStatus(self._hdwf, ctypes.byref(sts))
-            self._running = sts.value == _DWFSTATE_RUNNING
+            self._call("FDwfDigitalOutStatus", self._hdwf, ctypes.byref(sts))
+            self._running = sts.value == _DWF_STATE_RUNNING
             return self._running
 
     def get_pattern_state(self) -> PatternState:
@@ -548,30 +804,51 @@ class Digilent:
 
     # ------------------------------------------------------------------
     # Analog input — scope configuration
+    # (ref: WF_SDK/scope.py open, trigger)
     # ------------------------------------------------------------------
 
     def configure_scope_channel(self, config: ScopeChannelConfig) -> None:
         """Configure one analog input (scope) channel."""
         with self._lock:
+            self._require_connected()
+            if not (0 <= config.channel < self.NUM_SCOPE_CHANNELS):
+                raise ValueError(f"Invalid scope channel index: {config.channel}")
             ch = ctypes.c_int(config.channel)
-            self._dwf.FDwfAnalogInChannelEnableSet(
-                self._hdwf, ch, ctypes.c_int(int(config.enabled))
+
+            self._call(
+                "FDwfAnalogInChannelEnableSet",
+                self._hdwf,
+                ch,
+                ctypes.c_int(int(config.enabled)),
             )
-            self._dwf.FDwfAnalogInChannelRangeSet(
-                self._hdwf, ch, ctypes.c_double(config.range_volts)
+            self._call(
+                "FDwfAnalogInChannelRangeSet",
+                self._hdwf,
+                ch,
+                ctypes.c_double(config.range_volts),
             )
-            self._dwf.FDwfAnalogInChannelOffsetSet(
-                self._hdwf, ch, ctypes.c_double(config.offset_volts)
+            self._call(
+                "FDwfAnalogInChannelOffsetSet",
+                self._hdwf,
+                ch,
+                ctypes.c_double(config.offset_volts),
             )
-            self._dwf.FDwfAnalogInFrequencySet(
-                self._hdwf, ctypes.c_double(config.sample_rate)
+            self._call(
+                "FDwfAnalogInFrequencySet",
+                self._hdwf,
+                ctypes.c_double(config.sample_rate),
             )
-            self._dwf.FDwfAnalogInBufferSizeSet(
-                self._hdwf, ctypes.c_int(config.buffer_size)
+            self._call(
+                "FDwfAnalogInBufferSizeSet",
+                self._hdwf,
+                ctypes.c_int(config.buffer_size),
             )
-            coupling = 1 if config.coupling == "AC" else 0
-            self._dwf.FDwfAnalogInChannelFilterSet(
-                self._hdwf, ch, ctypes.c_int(coupling)
+            # Disable averaging  (ref: WF_SDK/scope.py open)
+            self._call(
+                "FDwfAnalogInChannelFilterSet",
+                self._hdwf,
+                ch,
+                ctypes.c_int(_FILTER_DECIMATE),
             )
             self._scope_configs[config.channel] = config
 
@@ -583,57 +860,106 @@ class Digilent:
         position_seconds: float = 0.0,
         auto_timeout: float = 1.0,
     ) -> None:
-        """Configure the analog-in trigger for scope acquisition."""
+        """Configure the analog-in trigger for scope acquisition.
+
+        Uses the scope's own trigger detector as source, with edge
+        triggering.  (ref: WF_SDK/scope.py trigger)
+        """
         with self._lock:
-            src = TRIGSRC_DETECT_POS if rising else TRIGSRC_DETECT_NEG
-            self._dwf.FDwfAnalogInTriggerSourceSet(self._hdwf, ctypes.c_int(src))
-            self._dwf.FDwfAnalogInTriggerChannelSet(self._hdwf, ctypes.c_int(channel))
-            self._dwf.FDwfAnalogInTriggerLevelSet(
-                self._hdwf, ctypes.c_double(level_volts)
+            self._require_connected()
+
+            # Source: scope's trigger detector  (ref: WF_SDK/scope.py)
+            self._call(
+                "FDwfAnalogInTriggerSourceSet",
+                self._hdwf,
+                ctypes.c_int(TRIGSRC_ANALOG_IN),
             )
+            self._call(
+                "FDwfAnalogInTriggerChannelSet",
+                self._hdwf,
+                ctypes.c_int(channel),
+            )
+
+            # Trigger type: edge  (ref: WF_SDK/scope.py)
+            self._call(
+                "FDwfAnalogInTriggerTypeSet",
+                self._hdwf,
+                ctypes.c_int(_TRIGTYPE_EDGE),
+            )
+            self._call(
+                "FDwfAnalogInTriggerLevelSet",
+                self._hdwf,
+                ctypes.c_double(level_volts),
+            )
+
+            # Trigger condition: rising or falling
             cond = _TRIGCOND_RISING if rising else _TRIGCOND_FALLING
-            self._dwf.FDwfAnalogInTriggerConditionSet(self._hdwf, ctypes.c_int(cond))
-            self._dwf.FDwfAnalogInTriggerPositionSet(
-                self._hdwf, ctypes.c_double(position_seconds)
+            self._call(
+                "FDwfAnalogInTriggerConditionSet",
+                self._hdwf,
+                ctypes.c_int(cond),
             )
-            self._dwf.FDwfAnalogInTriggerAutoTimeoutSet(
-                self._hdwf, ctypes.c_double(auto_timeout)
+            self._call(
+                "FDwfAnalogInTriggerPositionSet",
+                self._hdwf,
+                ctypes.c_double(position_seconds),
+            )
+            self._call(
+                "FDwfAnalogInTriggerAutoTimeoutSet",
+                self._hdwf,
+                ctypes.c_double(auto_timeout),
             )
 
     # ------------------------------------------------------------------
     # Analog input — acquisition
+    # (ref: WF_SDK/scope.py record, measure)
     # ------------------------------------------------------------------
 
     def start_scope(self) -> None:
         """Arm the scope for acquisition (waits for trigger)."""
         with self._lock:
-            self._dwf.FDwfAnalogInConfigure(
-                self._hdwf, ctypes.c_int(1), ctypes.c_int(1)
+            self._require_connected()
+            self._call(
+                "FDwfAnalogInConfigure",
+                self._hdwf,
+                ctypes.c_int(1),
+                ctypes.c_int(1),
             )
 
     def poll_scope(self, channel: int = 0) -> Optional[ScopeAcquisition]:
-        """
-        Non-blocking check: if scope acquisition is complete, return data.
+        """Non-blocking check: if scope acquisition is complete, return data.
 
         Returns ``None`` if still acquiring.  Designed to be called from a
         polling loop (e.g. ``ThreadPoolExecutor``).
         """
+        import numpy as _np
+
         with self._lock:
+            self._require_connected()
             sts = ctypes.c_int()
-            self._dwf.FDwfAnalogInStatus(self._hdwf, ctypes.c_int(1), ctypes.byref(sts))
-            if sts.value != _DWFSTATE_DONE:
+            self._call(
+                "FDwfAnalogInStatus",
+                self._hdwf,
+                ctypes.c_int(1),
+                ctypes.byref(sts),
+            )
+            if sts.value != _DWF_STATE_DONE:
                 return None
 
             config = self._scope_configs[channel]
             n = config.buffer_size
-            samples = (ctypes.c_double * n)()
-            self._dwf.FDwfAnalogInStatusData(
-                self._hdwf, ctypes.c_int(channel), samples, ctypes.c_int(n)
+            buf = (ctypes.c_double * n)()
+            self._call(
+                "FDwfAnalogInStatusData",
+                self._hdwf,
+                ctypes.c_int(channel),
+                buf,
+                ctypes.c_int(n),
             )
 
             return ScopeAcquisition(
                 channel=channel,
-                samples=np.ctypeslib.as_array(samples).copy(),
+                samples=_np.ctypeslib.as_array(buf).copy(),
                 sample_rate=config.sample_rate,
                 trigger_position=n // 2,
                 timestamp=time.monotonic(),
@@ -643,21 +969,30 @@ class Digilent:
     def stop_scope(self) -> None:
         """Stop scope acquisition."""
         with self._lock:
-            self._dwf.FDwfAnalogInConfigure(
-                self._hdwf, ctypes.c_int(0), ctypes.c_int(0)
+            if not self._connected:
+                return
+            self._call(
+                "FDwfAnalogInConfigure",
+                self._hdwf,
+                ctypes.c_int(0),
+                ctypes.c_int(0),
             )
 
+    def stop_all(self) -> None:
+        """Stop all activity (digital output and scope acquisition)."""
+        self.stop()
+        self.stop_scope()
+
     # ------------------------------------------------------------------
-    # Cross-trigger: scope → digital
+    # Cross-trigger: scope -> digital
     # ------------------------------------------------------------------
 
     def configure_scope_to_digital_trigger(self, rule: ScopeThresholdTrigger) -> None:
-        """
-        Set up a cross-trigger: scope threshold → digital output channel.
+        """Set up hardware cross-trigger: scope threshold -> digital output.
 
-        1. Configure scope trigger on the specified channel/threshold
-        2. Route scope trigger detector to digital-out trigger source
-        3. Configure the target digital channel with ``response_config``
+        1. Configures the scope trigger on the specified channel/threshold
+        2. Routes the scope trigger detector to the digital-out trigger bus
+        3. Configures the target digital channel with ``response_config``
         """
         self.configure_scope_trigger(
             channel=rule.scope_channel,
@@ -665,8 +1000,12 @@ class Digilent:
             rising=rule.rising,
         )
         with self._lock:
-            self._dwf.FDwfDigitalOutTriggerSourceSet(
-                self._hdwf, ctypes.c_int(TRIGSRC_ANALOG_IN)
+            self._require_connected()
+            # Route scope trigger detector -> digital out
+            self._call(
+                "FDwfDigitalOutTriggerSourceSet",
+                self._hdwf,
+                ctypes.c_int(TRIGSRC_ANALOG_IN),
             )
             self._trigger_source = TRIGSRC_ANALOG_IN
 
@@ -676,27 +1015,27 @@ class Digilent:
         self._threshold_triggers.append(rule)
 
     def clear_threshold_triggers(self) -> None:
-        """Remove all scope→digital trigger rules."""
+        """Remove all scope -> digital trigger rules."""
         self._threshold_triggers.clear()
 
     def poll_and_cross_trigger(self) -> bool:
-        """
-        Software cross-trigger: poll scope, if threshold crossed, fire digital.
+        """Software cross-trigger fallback: poll scope, fire digital if
+        threshold crossed.
 
         Returns ``True`` if a trigger event was detected and acted on.
-        Call from a background polling loop for software-based threshold triggers.
+        Call from a background polling loop for software-based threshold
+        triggers when the hardware trigger bus is insufficient.
         """
+        import numpy as _np
+
         for rule in self._threshold_triggers:
             acq = self.poll_scope(rule.scope_channel)
             if acq is not None:
+                diff = _np.diff(_np.sign(acq.samples - rule.threshold_volts))
                 if rule.rising:
-                    triggered = bool(
-                        np.any(np.diff(np.sign(acq.samples - rule.threshold_volts)) > 0)
-                    )
+                    triggered = bool(_np.any(diff > 0))
                 else:
-                    triggered = bool(
-                        np.any(np.diff(np.sign(acq.samples - rule.threshold_volts)) < 0)
-                    )
+                    triggered = bool(_np.any(diff < 0))
                 if triggered:
                     self.trigger()
                     return True
@@ -716,13 +1055,10 @@ class Digilent:
         burst_count: int = 50,
         burst_delay: float = 0.0,
     ) -> None:
-        """
-        Convenience: set up a continuous trigger signal + synchronized burst.
+        """Convenience: continuous trigger signal + synchronized burst.
 
-        Example use case:
-
-        - CH0: 1 kHz continuous trigger (50 % duty)
-        - CH1: 50 reps of 10 µs on / 30 µs off, starting at trigger edge
+        Example: CH0 = 1 kHz continuous trigger (50 % duty),
+        CH1 = 50 reps of 10 us on / 30 us off starting at trigger edge.
         """
         trigger_cfg = DigitalChannelConfig(
             channel=trigger_channel,
@@ -790,21 +1126,79 @@ class Digilent:
 
 
 if __name__ == "__main__":
-    # Example usage: print connected devices and run a simple pattern
-    print("Connected Digilent devices:")
-    for dev in enumerate_devices():
-        print(f"  {dev['index']}: {dev['name']} (SN: {dev['serial']})")
 
-    d = Digilent()
-    d.open()
+    print("Connected devices:", enumerate_devices())
+
+    digilent = Digilent()
+    digilent.open()
+    print("Current pattern state:", digilent.get_pattern_state())
+    print("\nConfigure output channel:")
+    channel = input("Channel number (0–15) [0]: ").strip()
     try:
-        d.setup_trigger_and_burst()
-        d.start()
-        print("Pattern generator started. Press Ctrl+C to stop.")
+        channel = int(channel) if channel else 0
+    except ValueError:
+        print("Invalid channel number. Defaulting to 0.")
+        channel = 0
+    print("Type 'q' at any prompt to exit.\n")
+
+    def str_to_float(s: str) -> float:
+        """parse string of form 11.1111k -> 11111.1"""
+        prefixes = {"u": -6, "m": -3, "k": 3, "M": 6, "G": 9}
+        s = s.strip()
+        if s and s[-1] in prefixes:
+            try:
+                return float(s[:-1]) * (10 ** prefixes[s[-1]])
+            except ValueError:
+                pass
+        return float(s)
+
+    def _prompt_float(prompt: str, default: float) -> Optional[float]:
+        raw = input(f"{prompt} [{default}]: ").strip()
+        if raw.lower() in {"q", "quit", "exit"}:
+            return None
+        if raw == "":
+            return default
+        return str_to_float(raw)
+
+    def _prompt_square_wave() -> Optional[Tuple[float, float]]:
         while True:
-            time.sleep(1)
+            try:
+                freq_hz = _prompt_float("D0 frequency (Hz)", 1000.0)
+                if freq_hz is None:
+                    return None
+                duty_pct = _prompt_float("D0 duty cycle (%)", 50.0)
+                if duty_pct is None:
+                    return None
+                break
+            except ValueError:
+                print("Invalid numeric input. Try again.\n")
+                continue
+        return freq_hz, duty_pct
+
+    try:
+        # code
+        while True:
+            square_wave = _prompt_square_wave()
+            if square_wave is None:
+                break
+            freq_hz, duty_pct = square_wave
+            cfg = DigitalChannelConfig(
+                channel=channel,
+                enabled=True,
+                period=1.0 / freq_hz,
+                duty_cycle=duty_pct / 100.0,
+            )
+            digilent.configure_digital_channel(cfg)
+            digilent.start()
+            print(
+                f"Running D{channel} at {freq_hz} Hz, {duty_pct}% duty. Press Ctrl+C to stop.\n"
+            )
+            q = input("Press Enter to reconfigure or 'q' to quit.\n")
+            if q in ["q", "quit", "exit"]:
+                break
+            digilent.stop()
     except KeyboardInterrupt:
-        print("Stopping...")
+        print("Exiting.")
     finally:
-        d.stop()
-        d.close()
+        digilent.stop_all()
+        digilent.close()

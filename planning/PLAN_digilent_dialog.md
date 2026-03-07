@@ -17,25 +17,25 @@ The dialog is a **self-contained, modeless window** (like `PowerSupplyDialog`) o
 
 ```
 ┌─ Digilent Pattern Generator ──────────────────────────────────────────────┐
-│  Connection: [Device combo ▼]  [↻] [Connect]   ● Connected               │
+│  Connection: [Device combo ▼]  [↻] [Connect]   ● Connected                │
 ├───────────────────────────┬───────────────────────────────────────────────┤
 │  Channel Settings (scroll)│  Waveform Preview (custom QPainter)           │
 │                           │                                               │
-│  ■ CH 0 "Trigger"   [ON] │   ┊     ┌──┐     ┌──┐     ┌──┐               │
-│   Period  [slider] 1 ms   │   ┊─────┘  └─────┘  └─────┘                  │
-│   Duty    [slider] 50 %   │   ┊                                          │
-│   Delay   [slider] 0 µs   │   ┊     ┌┐  ┌┐  ┌┐                          │
-│   Pulses  [Continuous]     │   ┊─────┘└──┘└──┘└──────────                 │
-│   Idle    [LOW ▼]          │   0        0.5        1.0 ms                 │
+│  ■ CH 0 "Trigger"   [ON]  │   ┊     ┌──┐     ┌──┐     ┌──┐                │
+│   Period  [slider] 1 ms   │   ┊─────┘  └─────┘  └─────┘                   │
+│   Duty    [slider] 50 %   │   ┊                                           │
+│   Delay   [slider] 0 µs   │   ┊     ┌┐  ┌┐  ┌┐                            │
+│   Pulses  [Continuous]    │   ┊─────┘└──┘└──┘└──────────                  │
+│   Idle    [LOW ▼]         │   0        0.5        1.0 ms                  │
 │                           │  Scroll=zoom, Drag=pan, DblClick=fit          │
-│  ■ CH 1 "Burst"    [ON]  │                                               │
+│  ■ CH 1 "Burst"    [ON]   │                                               │
 │   ...                     │                                               │
 │  [+ Add Channel]          │                                               │
 ├───────────────────────────┴───────────────────────────────────────────────┤
 │  Trigger: [None ▼]  Repeat: [Infinite]     [▶ Start] [■ Stop] [Trigger]  │
 ├───────────────────────────────────────────────────────────────────────────┤
-│  ▶ Scope Channels (collapsible)                                           │
-│    CH1 [✓] Range [5V] Coupling [DC]   CH2 [ ] Range [5V] Coupling [DC]   │
+│  ▶ Scope Channels (collapsible)                                          │
+│    CH1 [✓] Range [5V] Coupling [DC]   CH2 [ ] Range [5V] Coupling [DC]    │
 │    Trigger: [Auto] Level [0.0V] Edge [↗ Rising]                           │
 │    [Arm Scope] [Stop Scope]                                               │
 │    ┌─ Scope Trace (QPainter) ──────────────────────────────────────────┐  │
@@ -44,7 +44,7 @@ The dialog is a **self-contained, modeless window** (like `PowerSupplyDialog`) o
 ├───────────────────────────────────────────────────────────────────────────┤
 │                                          [Save Preset] [Load Preset]      │
 ├───────────────────────────────────────────────────────────────────────────┤
-│  ● Running | Clock: 100 MHz | Elapsed: 2.34s                             │
+│  ● Running | Clock: 100 MHz | Elapsed: 2.34s                              │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 

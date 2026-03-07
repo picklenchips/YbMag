@@ -14,14 +14,14 @@
   },
   "power_supplies": {
     "DP8B240900562": {
-      "name": "right",
+      "name": "bottom",
       "model": "DP832A",
       "channels": {
         "1": {
           "name": "+x"
         },
         "2": {
-          "name": "-z"
+          "name": "-y"
         },
         "3": {
           "name": "+y"
@@ -29,7 +29,7 @@
       }
     },
     "DP8B240900555": {
-      "name": "left",
+      "name": "top",
       "model": "DP832A",
       "channels": {
         "1": {
@@ -45,11 +45,27 @@
     }
   },
   "digilent": {
-    "last_device_serial": "",
+    "last_device_serial": "SN:210321A7F89D",
     "channel_names": {
-      "0": "Trigger",
-      "1": "Burst"
+      "0": "Trigger"
     },
-    "presets": {}
+    "presets": {
+      "_last_session": {
+        "digital_channels": [
+          {
+            "channel": 0,
+            "enabled": true,
+            "period": 0.0009999999999999998,
+            "duty_cycle": 0.5,
+            "delay": 0.0,
+            "pulse_count": 0,
+            "idle_state": false
+          }
+        ],
+        "channel_names": {
+          "0": "Trigger"
+        }
+      }
+    }
   }
 }
