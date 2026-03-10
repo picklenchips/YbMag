@@ -87,6 +87,7 @@ class PropertyTreeItemDelegate(QStyledItemDelegate):
 
     def updateEditorGeometry(self, editor, option, index):
         """Ensure editor fills the full cell rect"""
+        assert editor is not None, "Editor widget is None in updateEditorGeometry"
         editor.setGeometry(option.rect)
 
     def createEditor(self, parent: QWidget, option, index) -> Optional[QWidget]:

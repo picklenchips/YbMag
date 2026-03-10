@@ -258,7 +258,7 @@ class RigolDP832A:
 # ---------------------------------------------------------------------------
 
 
-class PowerSupplyManager:
+class RigolManager:
     """Discover and manage all connected Rigol DP832A supplies."""
 
     # USB resource names for DP832A typically contain "DP8" in the IDN
@@ -276,9 +276,8 @@ class PowerSupplyManager:
     def scan(self) -> List[RigolDP832A]:
         """Scan USB for DP832A supplies.
 
-        Already-connected supplies whose resource name is still present are
-        kept as-is.  New supplies are connected.  Missing supplies are
-        marked disconnected.
+        Already-connected supplies are kept as-is.  Disconnected supplies
+        are retried.  New supplies are probed and connected.
         """
         try:
             resources = self._rm.list_resources()
@@ -287,6 +286,17 @@ class PowerSupplyManager:
 
         # Build a set of currently-seen resource names
         seen: set[str] = set()
+
+        # Try to reconnect previously-known but disconnected supplies
+        for s in self._supplies:
+            if not s.is_connected:
+                try:
+                    s.connect()
+                except Exception:
+                    pass
+            if s.is_connected:
+                seen.add(s.resource_name)
+
         existing_names = {s.resource_name for s in self._supplies}
         for res in resources:
             # Only probe USB resources (DP832A connects via USB-TMC)
@@ -342,3 +352,7 @@ class PowerSupplyManager:
             except Exception:
                 pass
         self._supplies.clear()
+
+
+# Backward-compatible alias
+PowerSupplyManager = RigolManager

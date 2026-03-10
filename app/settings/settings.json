@@ -42,7 +42,20 @@
           "name": "-x"
         }
       }
+    },
+    "ASRL6::INSTR": {
+      "name": "hp",
+      "model": "6653A",
+      "channels": {
+        "1": {
+          "name": "-z"
+        }
+      }
     }
+  },
+  "hp6653a": {
+    "resource_name": "ASRL6::INSTR",
+    "gpib_address": 5
   },
   "digilent": {
     "last_device_serial": "SN:210321A7F89D",
@@ -55,8 +68,8 @@
           {
             "channel": 0,
             "enabled": true,
-            "period": 0.0009999999999999998,
-            "duty_cycle": 0.5,
+            "period": 0.001,
+            "duty_cycle": 0.01,
             "delay": 0.0,
             "pulse_count": 0,
             "idle_state": false
@@ -65,6 +78,52 @@
         "channel_names": {
           "0": "Trigger"
         }
+      },
+      "trigger_and_burst": {
+        "digital_channels": [
+          {
+            "channel": 0,
+            "enabled": true,
+            "period": 0.0009999999999999998,
+            "duty_cycle": 0.5,
+            "delay": 0.0,
+            "pulse_count": 0,
+            "idle_state": false
+          },
+          {
+            "channel": 1,
+            "enabled": true,
+            "period": 1e-06,
+            "duty_cycle": 0.01,
+            "delay": 0.0,
+            "pulse_count": 0,
+            "idle_state": false
+          }
+        ],
+        "channel_names": {
+          "0": "Trigger",
+          "1": "Burst"
+        },
+        "trigger_source": 0,
+        "repeat_count": 0
+      },
+      "1k1u": {
+        "digital_channels": [
+          {
+            "channel": 0,
+            "enabled": true,
+            "period": 0.001,
+            "duty_cycle": 0.01,
+            "delay": 0.0,
+            "pulse_count": 0,
+            "idle_state": false
+          }
+        ],
+        "channel_names": {
+          "0": "Trigger"
+        },
+        "trigger_source": 0,
+        "repeat_count": 0
       }
     }
   }

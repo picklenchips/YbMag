@@ -1,5 +1,10 @@
 # Yb Magnetometer Control & Simulation
 
+
+1. Experimental GUI built with PyQt6 for controlling the Yt magnetometer experiment. Run `python ./app/demoapp.py` to launch the GUI.
+2. Simulation / image analysis scripts for modeling the physics of the experiment and analyzing data.
+
+
 ### Current Organization
 ```
 Control/
@@ -75,15 +80,8 @@ Control/
     └── copilot-instructions.md   # This file
 ```
 
-Experimental GUI built with PyQt6 for controlling and monitoring the Yt magnetometer experiment. Run `python ./app/demoapp.py` to launch the GUI.
-
 ### Next Steps 
-- [ ] Integrate experimental control into GUI
-- [ ] Integrate Digilent trigger control into AcquisitionWorker for camera acquisition instead of Python (see example file)
-- [ ] Add logging to AcquisitionWorker
-- [ ] Integrate programmable DC power supply control for static B fields
+- [ ] Add logging
 - [ ] Integrate image analysis and processing scripts into GUI
-- [ ] Add real-time plotting of magnetometer data
-- [ ] Integrate simulation with GUI for real-time comparison of experimental and simulated data
 - [ ] ipynb for example of ATSolver usage for fitting magnetometer data to extract parameters like B field strength, relaxation times, etc.
 - [ ] Re-create fluorescence simulation in PyTorch for parameter optimization and fitting to experimental data

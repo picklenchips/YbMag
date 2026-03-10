@@ -1,7 +1,8 @@
 """
-Power Supply Dialog — Qt6 front-end for Rigol DP832A supplies.
+Power Supply Dialog — Qt6 front-end for DC power supplies.
 
-Provides a collapsible panel per supply, each with three channel controls
+Supports Rigol DP832A (USB-TMC) and HP 6653A (Prologix GPIB-USB).
+Provides a collapsible panel per supply, with per-channel controls
 (voltage slider, current slider, output toggle, live readback).
 Polls measurement data in a background thread to keep the GUI responsive.
 """
@@ -33,7 +34,7 @@ from PyQt6.QtWidgets import (
 )
 
 # Import from project root — works because app.py adds the parent to
-from devices.rigol_dp832a import RigolDP832A, PowerSupplyManager, ChannelInfo
+from devices.power_supply_manager import PowerSupplyManager
 from dialogs.controls.basic_slider import BasicSlider
 from resources.style_manager import get_style_manager
 
@@ -72,28 +73,42 @@ def _get_power_supply_poll_interval_ms(default_ms: int = 350) -> int:
     return max(50, value)
 
 
-def _get_supply_display_name(supply: RigolDP832A) -> str:
-    """Get display name for a supply from settings or fall back to defaults."""
+def _find_supply_config(supply) -> tuple[str, Dict[str, Any]]:
+    """Look up a supply's config by serial, then by resource_name.
+
+    Returns (lookup_key, config_dict).  config_dict is {} if not found.
+    """
     settings = _load_settings()
     supplies_config = settings.get("power_supplies", {})
 
     serial = supply.serial or supply.resource_name
     if serial in supplies_config:
-        config = supplies_config[serial]
-        supply_name = config.get("name", "").upper() if config.get("name") else serial
-        model = config.get("model", "DP832A")
-        return f"{supply_name} — {model} — {serial}"
+        return serial, supplies_config[serial]
+    # Fallback: try resource_name (useful for Prologix ASRL ports)
+    res = supply.resource_name
+    if res in supplies_config:
+        return res, supplies_config[res]
+    return serial, {}
 
-    return f"{serial} ({supply.model})"
+
+def _get_supply_display_name(supply) -> str:
+    """Get display name for a supply from settings or fall back to defaults."""
+    key, config = _find_supply_config(supply)
+
+    if config:
+        supply_name = config.get("name", "").upper() if config.get("name") else key
+        model = config.get("model", supply.model)
+        return f"{supply_name} — {model} — {key}"
+
+    return f"{key} ({supply.model})"
 
 
-def _get_channel_display_name(serial: str, channel_num: int) -> str:
+def _get_channel_display_name(supply, channel_num: int) -> str:
     """Get display name for a channel from settings or fall back to defaults."""
-    settings = _load_settings()
-    supplies_config = settings.get("power_supplies", {})
+    _key, config = _find_supply_config(supply)
 
-    if serial in supplies_config:
-        channels_config = supplies_config[serial].get("channels", {})
+    if config:
+        channels_config = config.get("channels", {})
         ch_key = str(channel_num)
         if ch_key in channels_config:
             return channels_config[ch_key].get("name", f"CH{channel_num}")
@@ -122,8 +137,8 @@ class ChannelControlWidget(QWidget):
 
     def __init__(
         self,
-        supply: RigolDP832A,
-        ch_info: ChannelInfo,
+        supply,
+        ch_info,
         channel_name: str = "",
         parent: Optional[QWidget] = None,
     ):
@@ -135,7 +150,7 @@ class ChannelControlWidget(QWidget):
 
         self._build_ui(ch_info)
 
-    def _build_ui(self, ch: ChannelInfo) -> None:
+    def _build_ui(self, ch) -> None:
         main = QVBoxLayout(self)
         main.setContentsMargins(8, 4, 8, 4)
 
@@ -244,8 +259,8 @@ class ChannelControlWidget(QWidget):
 
     # -- update from polled data -------------------------------------------
 
-    def update_readback(self, ch: ChannelInfo) -> None:
-        """Refresh labels & output button from a freshly-polled ChannelInfo."""
+    def update_readback(self, ch) -> None:
+        """Refresh labels & output button from a freshly-polled channel info."""
         self.v_meas.setText(f"{ch.meas_voltage:.4f} V")
         self.i_meas.setText(f"{ch.meas_current:.4f} A")
         self.p_meas.setText(f"{ch.meas_power:.4f} W")
@@ -272,7 +287,7 @@ class SupplySection(QWidget):
 
     def __init__(
         self,
-        supply: RigolDP832A,
+        supply,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
@@ -316,9 +331,7 @@ class SupplySection(QWidget):
 
         for ch_info in self._supply.channels:
             # Get channel display name from settings
-            channel_name = _get_channel_display_name(
-                self._supply.serial or self._supply.resource_name, ch_info.number
-            )
+            channel_name = _get_channel_display_name(self._supply, ch_info.number)
             cw = ChannelControlWidget(
                 self._supply, ch_info, channel_name=channel_name, parent=self.body
             )
@@ -326,7 +339,7 @@ class SupplySection(QWidget):
             self._channel_widgets.append(cw)
 
             # separator between channels (except after last)
-            if ch_info.number < RigolDP832A.NUM_CHANNELS:
+            if ch_info.number < len(self._supply.channels):
                 line = QFrame()
                 line.setFrameShape(QFrame.Shape.HLine)
                 line.setFrameShadow(QFrame.Shadow.Sunken)
@@ -380,7 +393,7 @@ class SupplySection(QWidget):
 
 
 class PowerSupplyDialog(QDialog):
-    """Dialog for controlling all connected Rigol DP832A power supplies."""
+    """Dialog for controlling all connected DC power supplies."""
 
     _DEFAULT_POLL_INTERVAL_MS = 350
 
@@ -440,33 +453,37 @@ class PowerSupplyDialog(QDialog):
         self._scroll.setWidget(self._scroll_widget)
         root.addWidget(self._scroll)
 
-        self._no_supplies_lbl: Optional[QLabel] = (
-            None  # placeholder when no supplies found
+        # Persistent "no supplies" label — hidden until needed
+        self._no_supplies_lbl = QLabel(
+            "No power supplies found.\nAre they powered on?\n\n"
+            "Click Refresh to scan again."
         )
+        self._no_supplies_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._no_supplies_lbl.setWordWrap(True)
+        self._no_supplies_lbl.hide()
+        self._scroll_layout.addWidget(self._no_supplies_lbl)
 
     def _populate(self) -> None:
         """Build / rebuild supply sections from manager."""
-        # Clear old
+        # Clear old sections and any stale stretch spacers
         for s in self._sections:
             s.setParent(None)
             s.deleteLater()
         self._sections.clear()
 
+        # Remove spacer items (stretches) from previous populate calls
+        for i in reversed(range(self._scroll_layout.count())):
+            item = self._scroll_layout.itemAt(i)
+            if item and item.widget() is None and item.layout() is None:
+                self._scroll_layout.removeItem(item)
+
         supplies = self._manager.supplies
         if not supplies:
-            if self._no_supplies_lbl is None:
-                self._no_supplies_lbl = QLabel(
-                    "No power supplies found (are they on?). \nClick Refresh to scan USB ports once more."
-                )
-                self._no_supplies_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                self._no_supplies_lbl.setStyleSheet("color: #888; padding: 40px;")
-            self._scroll_layout.addWidget(self._no_supplies_lbl)
+            self._no_supplies_lbl.show()
             self._status_lbl.setText("0 supplies")
             return
-        elif self._no_supplies_lbl:
-            self._no_supplies_lbl.setParent(None)
-            self._no_supplies_lbl.deleteLater()
-            self._no_supplies_lbl = None
+
+        self._no_supplies_lbl.hide()
 
         for supply in supplies:
             section = SupplySection(supply, parent=self._scroll_widget)

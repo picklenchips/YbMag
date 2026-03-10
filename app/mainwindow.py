@@ -54,7 +54,7 @@ from dialogs import (
     RotaryMotorDialog,
     DigilentDialog,
 )
-from devices.rigol_dp832a import PowerSupplyManager
+from devices.power_supply_manager import PowerSupplyManager
 
 GOT_PHOTO_EVENT = QEvent.Type(QEvent.Type.User + 1)
 DEVICE_LOST_EVENT = QEvent.Type(QEvent.Type.User + 2)

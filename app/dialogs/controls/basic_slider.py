@@ -1,4 +1,5 @@
 import math
+import re
 
 from PyQt6.QtWidgets import (
     QWidget,
@@ -8,8 +9,27 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QLabel,
 )
-from PyQt6.QtGui import QDoubleValidator
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QRegularExpressionValidator
+from PyQt6.QtCore import Qt, QRegularExpression, pyqtSignal
+
+# Metric prefix multipliers for engineering notation input
+_METRIC_PREFIXES = {"k": 1e3, "m": 1e-3, "u": 1e-6}
+_METRIC_RE = re.compile(r"^([+-]?\d*\.?\d*)([kmu])(\d*)$", re.IGNORECASE)
+
+
+def parse_metric_value(text: str) -> float | None:
+    """Parse engineering notation: ``'1k1'`` → 1100, ``'100m'`` → 0.1, ``'4u7'`` → 4.7e-6.
+
+    Returns *None* if *text* doesn't match metric notation.
+    """
+    m = _METRIC_RE.match(text.strip())
+    if not m:
+        return None
+    integer_part = m.group(1) or "0"
+    prefix = m.group(2).lower()
+    frac = m.group(3)
+    value = float(f"{integer_part}.{frac}") if frac else float(integer_part)
+    return value * _METRIC_PREFIXES[prefix]
 
 
 class BasicSlider(QWidget):
@@ -68,8 +88,9 @@ class BasicSlider(QWidget):
         self.value_edit.setMaximumWidth(100)
         self.value_edit.setAlignment(Qt.AlignmentFlag.AlignRight)
 
-        validator = QDoubleValidator(self.min, self.max, self.float_precision, self)
-        validator.setNotation(QDoubleValidator.Notation.StandardNotation)
+        validator = QRegularExpressionValidator(
+            QRegularExpression(r"^[+-]?\d*\.?\d*[kmuKMU]?\d*$"), self
+        )
         self.value_edit.setValidator(validator)
 
         # Horizontal slider: stretches to fill available width
@@ -92,15 +113,18 @@ class BasicSlider(QWidget):
 
         self.setLayout(layout)
 
-    def get_value(self) -> float:
+    @property
+    def value(self) -> float:
+        """Current value based on slider position."""
         return self.slider.value() * self.step + self.min
 
     def set_value(self, value: float) -> None:
         """Programmatically set the slider position without emitting
         ``valueChanged``."""
-        value = max(self.min, min(value, self.max))
-        tick = int(round((value - self.min) / self.step))
-        formatted = self._format_value_text(value)
+        value = max(self.min, min(value, self.max))  # Clamp to range
+        tick = int(round((value - self.min) / self.step))  # Snap to nearest step
+        snapped = tick * self.step + self.min
+        formatted = self._format_value_text(snapped)
 
         # Keep user typing stable: do not overwrite text while the edit box has focus.
         editing_text = self.value_edit.hasFocus()
@@ -114,11 +138,11 @@ class BasicSlider(QWidget):
 
     # keep old name as internal alias
     def on_change(self) -> None:
-        self.value_edit.setText(self._format_value_text(self.get_value()))
+        self.value_edit.setText(self._format_value_text(self.value))
 
     def _on_slider_changed(self) -> None:
         """Internal handler for QSlider.valueChanged."""
-        val = self.get_value()
+        val = self.value
         formatted = self._format_value_text(val)
         if not self.value_edit.hasFocus() and self.value_edit.text() != formatted:
             self.value_edit.setText(formatted)
@@ -127,17 +151,19 @@ class BasicSlider(QWidget):
 
     def _on_text_edited(self) -> None:
         """Internal handler for QLineEdit return pressed."""
+        raw = self.value_edit.text().strip()
         try:
-            val = float(self.value_edit.text().strip())
-            # Clamp to valid range
+            val = parse_metric_value(raw)
+            if val is None:
+                val = float(raw)
             val = max(self.min, min(val, self.max))
-            prev = self.get_value()
+            prev = self.value
             self.set_value(val)
-            if abs(val - prev) > self._epsilon:
-                self.valueChanged.emit(val)
+            snapped = self.value  # actual step-snapped value
+            if abs(snapped - prev) > self._epsilon:
+                self.valueChanged.emit(snapped)
         except ValueError:
-            # Invalid input, revert to current value
-            self.value_edit.setText(self._format_value_text(self.get_value()))
+            self.value_edit.setText(self._format_value_text(self.value))
 
     def _format_value_text(self, value: float | int) -> str:
         """Format value for display in numeric text field."""

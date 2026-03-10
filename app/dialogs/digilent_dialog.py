@@ -320,34 +320,36 @@ class _DigitalChannelWidget(QFrame):
         header.addWidget(self._remove_btn)
         main.addLayout(header)
 
-        # -- Period slider
+        # -- Frequency slider
         p_row = QHBoxLayout()
-        p_row.addWidget(QLabel("Period"))
-        self._period_slider = BasicSlider(
-            1e-6, 1.0, config.period, 1e-6, float_precision=6, unit="s"
+        p_row.addWidget(QLabel("Freq"))
+        init_freq = 1.0 / config.period if config.period > 0 else 1000.0
+        self._freq_slider = BasicSlider(
+            1.0, 1e6, init_freq, 1.0, float_precision=1, unit="Hz"
         )
-        self._period_slider.valueChanged.connect(self._on_param_changed)
-        p_row.addWidget(self._period_slider, stretch=1)
-        self._freq_label = QLabel()
-        self._freq_label.setMinimumWidth(90)
-        self._freq_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        self._freq_label.setStyleSheet("font-family: monospace; color: #888;")
-        p_row.addWidget(self._freq_label)
+        self._freq_slider.valueChanged.connect(self._on_param_changed)
+        p_row.addWidget(self._freq_slider, stretch=1)
+        self._period_label = QLabel()
+        self._period_label.setMinimumWidth(90)
+        self._period_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self._period_label.setStyleSheet("font-family: monospace; color: #888;")
+        p_row.addWidget(self._period_label)
         main.addLayout(p_row)
 
-        # -- Duty cycle slider
+        # -- Pulse width slider
         d_row = QHBoxLayout()
-        d_row.addWidget(QLabel("Duty"))
-        self._duty_slider = BasicSlider(
-            0.01, 0.99, config.duty_cycle, 0.01, float_precision=2, unit="%"
+        d_row.addWidget(QLabel("PW"))
+        init_pw = config.period * config.duty_cycle
+        self._pw_slider = BasicSlider(
+            1e-6, 1.0, init_pw, 1e-6, float_precision=6, unit="s"
         )
-        self._duty_slider.valueChanged.connect(self._on_param_changed)
-        d_row.addWidget(self._duty_slider, stretch=1)
-        self._pw_label = QLabel()
-        self._pw_label.setMinimumWidth(90)
-        self._pw_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        self._pw_label.setStyleSheet("font-family: monospace; color: #888;")
-        d_row.addWidget(self._pw_label)
+        self._pw_slider.valueChanged.connect(self._on_param_changed)
+        d_row.addWidget(self._pw_slider, stretch=1)
+        self._duty_label = QLabel()
+        self._duty_label.setMinimumWidth(90)
+        self._duty_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self._duty_label.setStyleSheet("font-family: monospace; color: #888;")
+        d_row.addWidget(self._duty_label)
         main.addLayout(d_row)
 
         # -- Delay slider
@@ -396,19 +398,25 @@ class _DigitalChannelWidget(QFrame):
         return self._name_edit.text()
 
     def get_config(self) -> DigitalChannelConfig:
+        freq = self._freq_slider.value
+        period = 1.0 / freq if freq > 0 else 1.0
+        pw = self._pw_slider.value
+        duty = max(0.01, min(0.99, pw / period)) if period > 0 else 0.5
         return DigitalChannelConfig(
             channel=self._channel,
             enabled=self._enable_btn.isChecked(),
-            period=self._period_slider.get_value(),
-            duty_cycle=self._duty_slider.get_value(),
-            delay=self._delay_slider.get_value(),
+            period=period,
+            duty_cycle=duty,
+            delay=self._delay_slider.value,
             pulse_count=self._pulse_spin.value(),
             idle_state=self._idle_combo.currentIndex() == 1,
         )
 
     def set_config(self, config: DigitalChannelConfig) -> None:
-        self._period_slider.set_value(config.period)
-        self._duty_slider.set_value(config.duty_cycle)
+        self._freq_slider.set_value(
+            1.0 / config.period if config.period > 0 else 1000.0
+        )
+        self._pw_slider.set_value(config.period * config.duty_cycle)
         self._delay_slider.set_value(config.delay)
         self._pulse_spin.setValue(config.pulse_count)
         self._idle_combo.setCurrentIndex(1 if config.idle_state else 0)
@@ -441,10 +449,12 @@ class _DigitalChannelWidget(QFrame):
         self._emit_changed()
 
     def _update_readouts(self) -> None:
-        period = self._period_slider.get_value()
-        duty = self._duty_slider.get_value()
-        self._freq_label.setText(f"({_format_freq(1.0 / period if period > 0 else 0)})")
-        self._pw_label.setText(f"({_format_time(period * duty)} HIGH)")
+        freq = self._freq_slider.value
+        period = 1.0 / freq if freq > 0 else 1.0
+        pw = self._pw_slider.value
+        duty = pw / period if period > 0 else 0.5
+        self._period_label.setText(f"({_format_time(period)})")
+        self._duty_label.setText(f"({duty * 100:.1f}% duty)")
 
     def _emit_changed(self) -> None:
         self.configChanged.emit(self._channel)
@@ -1217,7 +1227,7 @@ class _ScopePanel(QGroupBox):
     def get_trigger_config(self) -> dict:
         return {
             "mode": self._trig_mode.currentText().lower(),
-            "level": self._trig_level.get_value(),
+            "level": self._trig_level.value,
             "rising": self._trig_edge.currentIndex() == 0,
         }
 
