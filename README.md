@@ -81,7 +81,8 @@ Control/
 ```
 
 ### Next Steps 
-- [ ] Add logging
+- [ ] Fix camera settings dialog
+- [ ] Improve logging
 - [ ] Integrate image analysis and processing scripts into GUI
 - [ ] ipynb for example of ATSolver usage for fitting magnetometer data to extract parameters like B field strength, relaxation times, etc.
 - [ ] Re-create fluorescence simulation in PyTorch for parameter optimization and fitting to experimental data

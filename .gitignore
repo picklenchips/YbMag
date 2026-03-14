@@ -17,7 +17,11 @@ wheels/
 ic4-examples/
 waveforms/
 old/
+images/
+videos/
 
 # images (for now) (not .png because those are our icons)
 *.jpg
 *.bmp
+*.png
+*.mp4
