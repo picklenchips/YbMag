@@ -13,6 +13,7 @@ from imagingcontrol4.sink import Sink
 from imagingcontrol4.display import Display
 from imagingcontrol4.properties import Property
 
+MS_TIMEOUT = 100
 
 @dataclass
 class StreamRestartInfo:
@@ -26,6 +27,203 @@ class StreamRestartInfo:
 
 StreamRestartFilterFunction = Callable[[Grabber, StreamRestartInfo], StreamRestartInfo]
 PropSelectedFunction = Callable[[Property], None]
+
+
+class MultiPropControlBase(QWidget):
+    """Base class for all property control widgets, specifying one or more properties.
+
+    Doesn't implement any QT layouts, only imagingcontrol4 connection"""
+
+    UPDATE_ALL = QEvent.Type.User + 1
+
+    def __init__(
+        self,
+        props: list[Property] | dict[Any, Property],
+        parent: Optional[QWidget],
+        grabber: Optional[Grabber],
+    ):
+        super().__init__(parent)
+
+        # For multi-property controls, track which property is currently "active"
+        self.idx = 0
+        self.props = props
+        self._props_list = props if isinstance(props, list) else list(props.values())
+        self.grabber = grabber
+        self._is_destroyed = False  # Flag to track if widget is being destroyed
+
+        # set up timer for delayed updates
+        self.prev_update = QTime.currentTime()
+        self.final_update = QTimer()
+        self.final_update.setSingleShot(True)
+        self.final_update.setInterval(MS_TIMEOUT)
+        self.final_update.timeout.connect(self._on_final_update_timeout)
+
+        # Callbacks that can be registered by subclasses or external code
+        self.restart_filter_func: Optional[StreamRestartFilterFunction] = None
+        self.prop_selected_func: Optional[PropSelectedFunction] = None
+
+        # Connect to destroyed signal to ensure cleanup
+        self.destroyed.connect(self._on_destroyed)
+
+        # Register for property notifications
+        self.notifications = []
+        self._register_notifications(self)
+
+    @property
+    def prop(self) -> Property:
+        return self._props_list[self.idx]
+
+    @prop.setter
+    def prop(self, new_value: Any) -> None:
+        """set value of currently active property"""
+        prop = self.prop
+
+        def set_func(value):
+            prop.value = value  # type: ignore
+
+        self.prop_set_value(new_value, set_func)
+
+    def prop_set_value(self, value: Any, set_func: Callable) -> bool:
+        """Set property value with stream restart handling"""
+        restart_info = self.stop_stream_if_required()
+
+        try:
+            set_func(value)
+            return self.restart_stream(restart_info)
+        except Exception as e:
+            self.restart_stream(restart_info)
+            return False
+
+    def _on_destroyed(self):
+        """Called when widget is being destroyed"""
+        self._is_destroyed = True
+        # Stop any pending updates
+        if self.final_update:
+            self.final_update.stop()
+        self._unregister_notifications()
+
+    def _register_notifications(self, prop):
+        for prop in self._props_list:
+            try:
+                notify = prop.event_add_notification(
+                    lambda prop: self._schedule_update()
+                )
+                self.notifications.append(notify)
+            except Exception:
+                pass
+
+    def _unregister_notifications(self):
+        """Unregister property notification"""
+        for prop, notify in zip(self._props_list, self.notifications):
+            try:
+                prop.event_remove_notification(notify)
+            except Exception:
+                pass
+
+    def __del__(self):
+        """Python destructor - unregister notification"""
+        self._unregister_notifications()
+
+    def should_display_as_locked(self) -> bool:
+        """Check if property should be displayed as locked"""
+        try:
+            prop_is_locked = self.prop.is_locked
+
+            if self.grabber and prop_is_locked:
+                if self.grabber.is_streaming and self.prop.is_likely_locked_by_stream:
+                    return False
+
+            return prop_is_locked
+        except Exception:
+            return True
+
+    def stop_stream_if_required(self) -> StreamRestartInfo:
+        """Stop stream if current property is locked by it"""
+        if not self.grabber:
+            return StreamRestartInfo()
+
+        try:
+            if not self.prop.is_likely_locked_by_stream:
+                return StreamRestartInfo()
+
+            if not self.grabber.is_streaming:
+                return StreamRestartInfo()
+
+            start_option = (
+                StreamSetupOption.ACQUISITION_START
+                if self.grabber.is_acquisition_active
+                else StreamSetupOption.DEFER_ACQUISITION_START
+            )
+
+            try:
+                display = self.grabber.display
+            except Exception:
+                display = None
+
+            try:
+                sink = self.grabber.sink
+            except Exception:
+                sink = None
+
+            self.grabber.stream_stop()
+
+            return StreamRestartInfo(True, start_option, sink, display)
+        except Exception:
+            return StreamRestartInfo()
+
+    def restart_stream(self, restart_info: StreamRestartInfo) -> bool:
+        """Restart stream with given info"""
+        if not self.grabber:
+            return True
+
+        if not restart_info.do_restart:
+            return True
+
+        info = restart_info
+
+        if self.restart_filter_func:
+            info = self.restart_filter_func(self.grabber, info)
+
+        try:
+            self.grabber.stream_setup(info.sink, info.display, info.stream_start_option)
+            return True
+        except Exception:
+            return False
+
+    def _schedule_update(self):
+        """Schedule a UI update (matches C++ notification callback)"""
+        if self._is_destroyed:
+            return
+
+        try:
+            QApplication.removePostedEvents(self, self.UPDATE_ALL)
+            QApplication.postEvent(self, QEvent(self.UPDATE_ALL))
+        except RuntimeError:
+            self._is_destroyed = True
+
+    def _on_final_update_timeout(self):
+        """Timer callback for delayed update (matches C++ final_update_callback)"""
+        self._schedule_update()
+
+    def customEvent(self, event: QEvent):
+        """Handle custom events (matches C++ customEvent)"""
+        if event.type() == self.UPDATE_ALL:
+            if self._is_destroyed:
+                return
+            current_time = QTime.currentTime()
+            if current_time > self.prev_update.addMSecs(MS_TIMEOUT):
+                try:
+                    self.update_all()
+                except Exception:
+                    pass
+                self.prev_update = current_time
+                self.final_update.stop()
+            else:
+                self.final_update.start()
+
+    def update_all(self):
+        """Update all UI elements - must be implemented by subclasses"""
+        raise NotImplementedError("Subclass must implement update_all()")
 
 
 class PropControlBase(QWidget):

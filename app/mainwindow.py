@@ -1,5 +1,7 @@
 from threading import Lock
 import gc
+import json
+import subprocess
 from pathlib import Path
 from typing import cast
 
@@ -21,6 +23,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
     QToolBar,
+    QToolButton,
 )
 
 # ImagingControl4, direct import for typing
@@ -46,6 +49,7 @@ from resources.style_manager import get_style_manager, ThemeMode
 # local imports
 from display_roi import DisplayWidgetROI
 from dialogs import (
+    CameraSettingsDialog,
     PropertyDialog,
     DeviceSelectionDialog,
     SettingsDialog,
@@ -54,6 +58,7 @@ from dialogs import (
     RotaryMotorDialog,
     DigilentDialog,
 )
+from dialogs.save_settings_dialog import SaveSettingsDialog
 from devices.power_supply_manager import PowerSupplyManager
 
 GOT_PHOTO_EVENT = QEvent.Type(QEvent.Type.User + 1)
@@ -72,12 +77,41 @@ class MainWindow(QMainWindow):
     def __init__(self):
         QMainWindow.__init__(self)
 
-        # Make sure the %appdata%/demoapp directory exists
-        self.save_pictures_directory = QStandardPaths.writableLocation(
+        # Load default save directories from settings, falling back to system defaults
+        default_pictures = QStandardPaths.writableLocation(
             QStandardPaths.StandardLocation.PicturesLocation
         )
-        self.save_videos_directory = QStandardPaths.writableLocation(
+        default_videos = QStandardPaths.writableLocation(
             QStandardPaths.StandardLocation.MoviesLocation
+        )
+        try:
+            with open(SETTINGS_PATH, "r") as f:
+                _startup_settings = json.load(f)
+        except Exception:
+            _startup_settings = {}
+        self.save_pictures_directory = _startup_settings.get(
+            "default_image_directory", default_pictures
+        )
+        self.save_videos_directory = _startup_settings.get(
+            "default_video_directory", default_videos
+        )
+        self.default_image_filename = _startup_settings.get(
+            "default_image_filename", ""
+        )
+        self.default_image_extension = _startup_settings.get(
+            "default_image_extension", ".png"
+        )
+        self.default_video_filename = _startup_settings.get(
+            "default_video_filename", ""
+        )
+        self.default_video_extension = _startup_settings.get(
+            "default_video_extension", ".mp4"
+        )
+        self.use_default_image_filename = _startup_settings.get(
+            "use_default_image_filename", False
+        )
+        self.use_default_video_filename = _startup_settings.get(
+            "use_default_video_filename", False
         )
 
         # Store device and codec config files locally in settings folder
@@ -91,6 +125,7 @@ class MainWindow(QMainWindow):
 
         self.capture_to_video = False
         self.video_capture_pause = False
+        self._current_video_path: str | None = None
 
         self.device_property_map = None
         self._trigger_mode_prop = None
@@ -210,10 +245,17 @@ class MainWindow(QMainWindow):
         self.device_select_act.setShortcut(QKeySequence.StandardKey.Open)
         self.device_select_act.triggered.connect(self.onSelectDevice)
 
-        self.device_properties_act = QAction(
-            selector.loadIcon("images/imgset.png"), "&Properties", self
+        self.camera_settings_act = QAction(
+            selector.loadIcon("images/imgset.png"), "&Camera Settings", self
         )
-        self.device_properties_act.setStatusTip("Show device property dialog")
+        self.camera_settings_act.setStatusTip("Show camera settings dialog")
+        self.camera_settings_act.setCheckable(True)
+        self.camera_settings_act.triggered.connect(self.onCameraSettings)
+
+        self.device_properties_act = QAction(
+            selector.loadIcon("images/gear.png"), "&All Properties", self
+        )
+        self.device_properties_act.setStatusTip("Show all camera properties dialog")
         self.device_properties_act.setCheckable(True)
         self.device_properties_act.triggered.connect(self.onDeviceProperties)
 
@@ -301,14 +343,19 @@ class MainWindow(QMainWindow):
         self.apply_roi_act = QAction(
             selector.loadIcon("images/crop.png"), "Apply &ROI to Camera", self
         )
-        self.apply_roi_act.setStatusTip("Apply drawn ROI to camera sensor region")
+        self.apply_roi_act.setStatusTip(
+            "Apply drawn ROI to crop camera sensor region (Ctrl+K)"
+        )
         self.apply_roi_act.setShortcut(QKeySequence("Ctrl+K"))
         self.apply_roi_act.triggered.connect(self.onApplyROI)
 
         self.reset_roi_act = QAction(
             selector.loadIcon("images/fullsize.png"), "Reset Camera R&OI", self
         )
-        self.reset_roi_act.setStatusTip("Reset camera to full sensor region")
+        self.reset_roi_act.setStatusTip(
+            "Reset camera to full sensor region (Ctrl+Shift+K)"
+        )
+        self.reset_roi_act.setShortcut(QKeySequence("Ctrl+Shift+K"))
         self.reset_roi_act.triggered.connect(self.onResetROI)
 
         self.undo_roi_act = QAction("&Undo Crop", self)
@@ -318,12 +365,27 @@ class MainWindow(QMainWindow):
 
         self.redo_roi_act = QAction("&Redo Crop", self)
         self.redo_roi_act.setStatusTip("Redo last undone ROI crop")
-        self.redo_roi_act.setShortcut(QKeySequence.StandardKey.Redo)
+        # also add Shift+Ctrl+Z as redo shortcut (common in some apps)
+        self.redo_roi_act.setShortcuts(
+            [QKeySequence.StandardKey.Redo, QKeySequence("Shift+Ctrl+Z")]
+        )
         self.redo_roi_act.triggered.connect(self.onRedoROI)
 
         settings_act = QAction("&UI Settings", self)
         settings_act.setStatusTip("Configure UI settings (theme, etc.)")
         settings_act.triggered.connect(self.onUISettings)
+
+        image_save_settings_act = QAction("&Image Save Settings...", self)
+        image_save_settings_act.setStatusTip(
+            "Configure default folder, filename and extension for image capture"
+        )
+        image_save_settings_act.triggered.connect(self._onImageSaveSettings)
+
+        video_save_settings_act = QAction("&Video Save Settings...", self)
+        video_save_settings_act.setStatusTip(
+            "Configure default folder, filename and extension for video capture"
+        )
+        video_save_settings_act.triggered.connect(self._onVideoSaveSettings)
 
         exit_act = QAction("E&xit", self)
         exit_act.setShortcut(QKeySequence.StandardKey.Quit)
@@ -335,13 +397,19 @@ class MainWindow(QMainWindow):
         assert file_menu is not None
         file_menu.addAction(settings_act)
         file_menu.addSeparator()
+        file_menu.addAction(image_save_settings_act)
+        file_menu.addAction(video_save_settings_act)
+        file_menu.addSeparator()
         file_menu.addAction(exit_act)
 
         device_menu = menubar.addMenu("&Device")
         assert device_menu is not None
         device_menu.addAction(self.device_select_act)
-        device_menu.addAction(self.device_properties_act)
+        device_menu.addSeparator()
+        device_menu.addAction(self.camera_settings_act)
         device_menu.addAction(self.device_driver_properties_act)
+        device_menu.addAction(self.device_properties_act)
+        device_menu.addSeparator()
         device_menu.addAction(self.trigger_mode_act)
         device_menu.addAction(self.stream_act)
         device_menu.addSeparator()
@@ -368,6 +436,7 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar(self)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
         toolbar.addAction(self.device_select_act)
+        toolbar.addAction(self.camera_settings_act)
         toolbar.addAction(self.device_properties_act)
         toolbar.addSeparator()
         toolbar.addAction(self.trigger_mode_act)
@@ -383,6 +452,18 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.record_stop_act)
         toolbar.addSeparator()
         toolbar.addAction(self.power_supply_act)
+
+        # Enable right-click context menus on capture toolbar buttons
+        for action, mode in [
+            (self.shoot_photo_act, "image"),
+            (self.record_act, "video"),
+        ]:
+            btn = toolbar.widgetForAction(action)
+            if isinstance(btn, QToolButton):
+                btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                btn.customContextMenuRequested.connect(
+                    lambda _pos, m=mode: self._onCaptureSaveSettings(m)
+                )
         toolbar.addAction(self.rotary_motor_act)
         toolbar.addAction(self.digilent_act)
         toolbar.addAction(self.hdr_act)
@@ -399,6 +480,13 @@ class MainWindow(QMainWindow):
         status_bar.showMessage("Ready")
         self.statistics_label = QLabel("", status_bar)
         status_bar.addPermanentWidget(self.statistics_label)
+        status_bar.addPermanentWidget(QLabel("  "))
+
+        # Last-saved file label (clickable link to open in Explorer)
+        self.file_link_label = QLabel("", status_bar)
+        self.file_link_label.setOpenExternalLinks(False)
+        self.file_link_label.linkActivated.connect(self._on_status_file_clicked)
+        status_bar.addPermanentWidget(self.file_link_label)
         status_bar.addPermanentWidget(QLabel("  "))
 
         # Pixel info label (right side of status bar, after statistics)
@@ -608,6 +696,14 @@ class MainWindow(QMainWindow):
             self.property_dialog.close()
             return
 
+        # Close camera settings dialog if open
+        if (
+            hasattr(self, "camera_settings_dialog")
+            and self.camera_settings_dialog is not None
+            and self.camera_settings_dialog.isVisible()
+        ):
+            self.camera_settings_dialog.close()
+
         if self.property_dialog is None:
             selector = get_resource_selector()
             # Include codec properties in a separate tab
@@ -627,6 +723,30 @@ class MainWindow(QMainWindow):
         self.device_properties_act.setChecked(True)
         self.property_dialog.show()
 
+    def onCameraSettings(self):
+        # If dialog already open, close it
+        if (
+            hasattr(self, "camera_settings_dialog")
+            and self.camera_settings_dialog is not None
+            and self.camera_settings_dialog.isVisible()
+        ):
+            self.camera_settings_dialog.close()
+            return
+
+        # Close device properties dialog if open
+        if self.property_dialog is not None and self.property_dialog.isVisible():
+            self.property_dialog.close()
+
+        selector = get_resource_selector()
+        self.camera_settings_dialog = CameraSettingsDialog(self.grabber, parent=self)
+        self.camera_settings_dialog.finished.connect(self._onCameraSettingsDialogClosed)
+        self.camera_settings_act.setChecked(True)
+        self.camera_settings_dialog.show()
+
+    def _onCameraSettingsDialogClosed(self):
+        self.camera_settings_act.setChecked(False)
+        self.camera_settings_dialog = None
+
     def _onPropertyDialogClosed(self):
         """Handle property dialog closed"""
         # Save codec config when properties dialog closes
@@ -634,7 +754,9 @@ class MainWindow(QMainWindow):
         # Release IC4 object references to allow proper garbage collection
         if self.property_dialog is not None:
             self.property_dialog.clear_all()
-        self.device_properties_act.setChecked(False)
+        self.device_properties_act.setChecked(
+            False
+        )  # Removed, replaced by settings dialog
         self.property_dialog = None
 
     def onDeviceDriverProperties(self):
@@ -644,6 +766,7 @@ class MainWindow(QMainWindow):
             parent=self,
             title="Device Driver Properties",
             resource_selector=selector,
+            tabbed=selector.get_tabbed_properties(),
         )
         dlg.apply_theme()
         # set default vis
@@ -1026,7 +1149,7 @@ class MainWindow(QMainWindow):
         if not self.grabber.is_device_open:
             self.statistics_label.clear()
 
-        self.device_properties_act.setEnabled(self.grabber.is_device_valid)
+        self.device_properties_act.setEnabled(self.grabber.is_device_valid)  # Removed
         self.device_driver_properties_act.setEnabled(self.grabber.is_device_valid)
         self.stream_act.setEnabled(self.grabber.is_device_valid)
         self.stream_act.setChecked(self.grabber.is_streaming)
@@ -1090,37 +1213,54 @@ class MainWindow(QMainWindow):
             self.onStartStopCaptureVideo()
 
     def onStartStopCaptureVideo(self):
-        filters = ["MP4 Video Files (*.mp4)"]
+        base_name = self.default_video_filename or "recording"
 
-        dialog = QFileDialog(self, "Capture Video")
-        dialog.setNameFilters(filters)
-        dialog.setFileMode(QFileDialog.FileMode.AnyFile)
-        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
-        dialog.setDirectory(self.save_videos_directory)
+        # If "use default filename" is on, save directly without dialog
+        if self.use_default_video_filename and self.save_videos_directory:
+            full_path = self._unique_path(
+                self.save_videos_directory,
+                base_name,
+                self.default_video_extension,
+            )
+        else:
+            filters = ["MP4 Video Files (*.mp4)"]
+            suggested = f"{base_name}{self.default_video_extension}"
 
-        if dialog.exec():
+            dialog = QFileDialog(self, "Capture Video")
+            dialog.setNameFilters(filters)
+            dialog.setFileMode(QFileDialog.FileMode.AnyFile)
+            dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+            dialog.setDirectory(self.save_videos_directory)
+            dialog.selectFile(suggested)
+
+            if not dialog.exec():
+                self.updateControls()
+                return
+
             full_path = dialog.selectedFiles()[0]
             self.save_videos_directory = QFileInfo(full_path).absolutePath()
 
-            fps = float(25)
-            try:
-                if self.device_property_map is not None:
-                    fps = self.device_property_map.get_value_float(
-                        PropId.ACQUISITION_FRAME_RATE
-                    )
-            except:
-                pass
-
-            try:
-                self.video_writer.begin_file(
-                    full_path, self.sink.output_image_type, fps
+        fps = float(25)
+        try:
+            if self.device_property_map is not None:
+                fps = self.device_property_map.get_value_float(
+                    PropId.ACQUISITION_FRAME_RATE
                 )
-            except Exception as e:
-                QMessageBox.critical(self, "", f"{e}", QMessageBox.StandardButton.Ok)
-                return
+        except:
+            pass
 
-            self.capture_to_video = True
-            self.video_capture_pause = False
+        try:
+            self.video_writer.begin_file(full_path, self.sink.output_image_type, fps)
+        except Exception as e:
+            QMessageBox.critical(self, "", f"{e}", QMessageBox.StandardButton.Ok)
+            self.updateControls()
+            return
+
+        self.capture_to_video = True
+        self.video_capture_pause = False
+        self._current_video_path = full_path
+
+        self._show_file_in_status_bar(full_path, prefix="Recording")
 
         self.updateControls()
 
@@ -1128,6 +1268,9 @@ class MainWindow(QMainWindow):
         self.capture_to_video = False
         self.video_capture_pause = False
         self.video_writer.finish_file()
+        if self._current_video_path:
+            self._show_file_in_status_bar(self._current_video_path, prefix="Saved")
+            self._current_video_path = None
         self.updateControls()
 
     def _reload_icons(self):
@@ -1136,7 +1279,8 @@ class MainWindow(QMainWindow):
 
         # Reload all action icons
         self.device_select_act.setIcon(selector.loadIcon("images/camera.png"))
-        self.device_properties_act.setIcon(selector.loadIcon("images/imgset.png"))
+        self.camera_settings_act.setIcon(selector.loadIcon("images/imgset.png"))
+        self.device_properties_act.setIcon(selector.loadIcon("images/gear.png"))
         self.trigger_mode_act.setIcon(selector.loadIcon("images/triggermode.png"))
         self.shoot_photo_act.setIcon(selector.loadIcon("images/photo.png"))
         self.power_supply_act.setIcon(selector.loadIcon("images/power.png"))
@@ -1208,6 +1352,7 @@ class MainWindow(QMainWindow):
             resource_selector,
             parent=self,
             on_theme_changed=self._on_theme_changed,  # type: ignore
+            on_properties=self.onDeviceProperties,
         )
         # Apply current theme to the settings dialog
         get_style_manager().apply_theme(resource_selector.get_theme())
@@ -1217,6 +1362,32 @@ class MainWindow(QMainWindow):
     def _onSettingsDialogClosed(self):
         """Handle settings dialog closed"""
         self.settings_dialog = None
+
+    def _onImageSaveSettings(self):
+        """Open the image save settings dialog."""
+        self._onCaptureSaveSettings("image")
+
+    def _onVideoSaveSettings(self):
+        """Open the video save settings dialog."""
+        self._onCaptureSaveSettings("video")
+
+    def _onCaptureSaveSettings(self, mode: str):
+        """Show the save-settings dialog for *mode* ('image' or 'video')."""
+        dlg = SaveSettingsDialog(parent=self, mode=mode)
+        dlg.apply_theme()
+        if dlg.exec() == SaveSettingsDialog.DialogCode.Accepted:
+            if mode == "image":
+                if dlg.directory:
+                    self.save_pictures_directory = dlg.directory
+                self.default_image_filename = dlg.filename
+                self.default_image_extension = dlg.extension
+                self.use_default_image_filename = dlg.use_default
+            else:
+                if dlg.directory:
+                    self.save_videos_directory = dlg.directory
+                self.default_video_filename = dlg.filename
+                self.default_video_extension = dlg.extension
+                self.use_default_video_filename = dlg.use_default
 
     # -- Power Supplies -----------------------------------------------------
 
@@ -1251,8 +1422,6 @@ class MainWindow(QMainWindow):
         # Create dialog on first use
         if self.rotary_motor_dialog is None:
             # Load motor port from settings
-            import json
-
             port = None
             try:
                 with open(SETTINGS_PATH, "r") as f:
@@ -1337,18 +1506,44 @@ class MainWindow(QMainWindow):
         self.updateControls()
 
     def savePhoto(self, image_buffer: "ImageBuffer") -> None:
-        filters = [
-            "Bitmap(*.bmp)",
-            "JPEG (*.jpg)",
-            "Portable Network Graphics (*.png)",
-            "TIFF (*.tif)",
-        ]
+        ext_to_filter = {
+            ".bmp": "Bitmap (*.bmp)",
+            ".jpg": "JPEG (*.jpg)",
+            ".png": "Portable Network Graphics (*.png)",
+            ".tif": "TIFF (*.tif)",
+        }
+        filters = list(ext_to_filter.values())
+
+        # Pre-select the filter matching the user's default extension
+        default_filter = ext_to_filter.get(self.default_image_extension, filters[2])
+
+        # Build a suggested filename
+        base_name = self.default_image_filename or "capture"
+        suggested = f"{base_name}{self.default_image_extension}"
+
+        # If "use default filename" is on, save directly without dialog
+        if self.use_default_image_filename and self.save_pictures_directory:
+            full_path = self._unique_path(
+                self.save_pictures_directory,
+                base_name,
+                self.default_image_extension,
+            )
+            try:
+                self._save_image_by_ext(
+                    image_buffer, full_path, self.default_image_extension
+                )
+                self._show_file_in_status_bar(full_path)
+            except Exception as e:
+                QMessageBox.critical(self, "", f"{e}", QMessageBox.StandardButton.Ok)
+            return
 
         dialog = QFileDialog(self, "Save Photo")
         dialog.setNameFilters(filters)
+        dialog.selectNameFilter(default_filter)
         dialog.setFileMode(QFileDialog.FileMode.AnyFile)
         dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
         dialog.setDirectory(self.save_pictures_directory)
+        dialog.selectFile(suggested)
 
         if dialog.exec():
             selected_filter = dialog.selectedNameFilter()
@@ -1357,13 +1552,67 @@ class MainWindow(QMainWindow):
             self.save_pictures_directory = QFileInfo(full_path).absolutePath()
 
             try:
-                if selected_filter == filters[0]:
+                if selected_filter == ext_to_filter[".bmp"]:
                     image_buffer.save_as_bmp(full_path)
-                elif selected_filter == filters[1]:
+                elif selected_filter == ext_to_filter[".jpg"]:
                     image_buffer.save_as_jpeg(full_path)
-                elif selected_filter == filters[2]:
+                elif selected_filter == ext_to_filter[".png"]:
                     image_buffer.save_as_png(full_path)
                 else:
                     image_buffer.save_as_tiff(full_path)
+                self._show_file_in_status_bar(full_path)
             except Exception as e:
                 QMessageBox.critical(self, "", f"{e}", QMessageBox.StandardButton.Ok)
+
+    @staticmethod
+    def _save_image_by_ext(image_buffer: "ImageBuffer", path: str, ext: str):
+        """Save an image buffer using the method matching *ext*."""
+        if ext == ".bmp":
+            image_buffer.save_as_bmp(path)
+        elif ext == ".jpg":
+            image_buffer.save_as_jpeg(path)
+        elif ext == ".tif":
+            image_buffer.save_as_tiff(path)
+        else:
+            image_buffer.save_as_png(path)
+
+    @staticmethod
+    def _unique_path(directory: str, base_name: str, extension: str) -> str:
+        """Return a file path in *directory* that does not yet exist.
+
+        Appends ``_N`` (N = 1, 2, ...) to *base_name* when the plain
+        name is already taken.
+        """
+        from datetime import datetime
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        candidate = Path(directory) / f"{base_name}_{timestamp}{extension}"
+        if not candidate.exists():
+            return str(candidate)
+        n = 1
+        while True:
+            candidate = Path(directory) / f"{base_name}_{timestamp}_{n}{extension}"
+            if not candidate.exists():
+                return str(candidate)
+            n += 1
+
+    def _show_file_in_status_bar(self, file_path: str, prefix: str = "Saved"):
+        """Show a clickable file path in the status bar.
+
+        Clicking the link opens the containing folder in File Explorer
+        with the file selected.
+        """
+        from html import escape
+
+        display = Path(file_path).name
+        escaped_path = escape(file_path, quote=True)
+        self.file_link_label.setText(
+            f'{prefix}: <a href="{escaped_path}">{escape(display)}</a>'
+        )
+
+    @staticmethod
+    def _on_status_file_clicked(link: str):
+        """Open File Explorer and select the file."""
+        path = Path(link)
+        if path.exists():
+            subprocess.Popen(["explorer", "/select,", str(path)])

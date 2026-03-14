@@ -69,7 +69,7 @@
             "channel": 0,
             "enabled": true,
             "period": 0.001,
-            "duty_cycle": 0.01,
+            "duty_cycle": 0.001,
             "delay": 0.0,
             "pulse_count": 0,
             "idle_state": false
@@ -113,7 +113,7 @@
             "channel": 0,
             "enabled": true,
             "period": 0.001,
-            "duty_cycle": 0.01,
+            "duty_cycle": 0.001,
             "delay": 0.0,
             "pulse_count": 0,
             "idle_state": false
@@ -126,5 +126,13 @@
         "repeat_count": 0
       }
     }
-  }
+  },
+  "default_image_directory": "C:/Shared/Yb/Dynamics/Control/images",
+  "default_image_filename": "capture",
+  "default_image_extension": ".png",
+  "use_default_image_filename": true,
+  "default_video_directory": "C:/Shared/Yb/Dynamics/Control/videos",
+  "default_video_filename": "recording",
+  "default_video_extension": ".mp4",
+  "use_default_video_filename": true
 }

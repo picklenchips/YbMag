@@ -9,11 +9,11 @@
   },
   "properties": {
     "AcquisitionBurstFrameCount": 1,
-    "AcquisitionFrameRate": 16.384,
+    "AcquisitionFrameRate": 6.384,
     "AutoFunctionsROIEnable": true,
     "AutoFunctionsROIPreset": "AutoFunctionsROIPreset_Center50Pct",
     "BlackLevel": 901.0,
-    "Contrast": 3,
+    "Contrast": 108,
     "Denoise": 0,
     "ExposureAuto": "Continuous",
     "ExposureAutoHighlightReduction": false,
@@ -24,8 +24,8 @@
     "GainAuto": "Continuous",
     "GainAutoLowerLimit": 0.0,
     "GainAutoUpperLimit": 48.0,
-    "Gamma": 1.11,
-    "Height": 1200,
+    "Gamma": 1.01,
+    "Height": 1536,
     "IMXLowLatencyTriggerMode": false,
     "LUTEnable": false,
     "PixelFormat": "Mono8",
@@ -49,6 +49,6 @@
     "TriggerMask": 1.0,
     "TriggerMode": "Off",
     "TriggerSource": "Any",
-    "Width": 1600
+    "Width": 2048
   }
 }

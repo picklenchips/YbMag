@@ -57,11 +57,14 @@ class BasicSlider(QWidget):
         step: float | int,
         float_precision: int = 2,
         unit: str = "",
+        log_scale: bool = False,
+        log_steps: int = 1000,
         parent: QWidget | QMainWindow | None = None,
     ):
         """
         Create a slider with an editable text field that shows the current value.
         Slider range is from min to max with nsteps increments of step size.
+        When *log_scale* is True the slider maps logarithmically across the range.
         """
         super().__init__(parent)
         self.min = min
@@ -69,10 +72,17 @@ class BasicSlider(QWidget):
         self.default = default
         self.step = step
         self.unit = unit
+        self._log_scale = log_scale
         step_precision = max(0, -int(math.floor(math.log10(step)))) if step < 1 else 0
         self.float_precision = max(float_precision, step_precision)
-        self.nsteps = (maximum - min) / step
         self._epsilon = max(float(step) * 1e-6, 1e-12)
+
+        if log_scale:
+            self._log_min = math.log10(max(min, 1e-15))
+            self._log_max = math.log10(max(maximum, 1e-15))
+            self.nsteps = log_steps
+        else:
+            self.nsteps = (maximum - min) / step
 
         self._programmatic = False  # guard against signal loops
 
@@ -98,7 +108,7 @@ class BasicSlider(QWidget):
         self.slider.setRange(0, int(self.nsteps))  # Start at 0 to allow dragging to min
         self.slider.setMinimumHeight(40)  # 80% of typical 50px height
         self.slider.valueChanged.connect(self._on_slider_changed)
-        self.slider.setValue(int(round((self.default - self.min) / self.step)))
+        self.slider.setValue(self._value_to_tick(self.default))
         layout.addWidget(self.slider, stretch=1)  # Takes all available horizontal space
         layout.addWidget(self.value_edit)  # Fixed size based on content
         if self.unit:
@@ -113,17 +123,34 @@ class BasicSlider(QWidget):
 
         self.setLayout(layout)
 
+    # -- Log / linear mapping helpers --
+
+    def _value_to_tick(self, value: float) -> int:
+        """Convert a real value to the nearest slider tick."""
+        if self._log_scale:
+            log_val = math.log10(max(value, 10**self._log_min))
+            frac = (log_val - self._log_min) / (self._log_max - self._log_min)
+            return int(round(frac * self.nsteps))
+        return int(round((value - self.min) / self.step))
+
+    def _tick_to_value(self, tick: int) -> float:
+        """Convert a slider tick to the real value."""
+        if self._log_scale:
+            frac = tick / self.nsteps
+            return 10 ** (self._log_min + frac * (self._log_max - self._log_min))
+        return tick * self.step + self.min
+
     @property
     def value(self) -> float:
         """Current value based on slider position."""
-        return self.slider.value() * self.step + self.min
+        return self._tick_to_value(self.slider.value())
 
     def set_value(self, value: float) -> None:
         """Programmatically set the slider position without emitting
         ``valueChanged``."""
         value = max(self.min, min(value, self.max))  # Clamp to range
-        tick = int(round((value - self.min) / self.step))  # Snap to nearest step
-        snapped = tick * self.step + self.min
+        tick = self._value_to_tick(value)
+        snapped = self._tick_to_value(tick)
         formatted = self._format_value_text(snapped)
 
         # Keep user typing stable: do not overwrite text while the edit box has focus.
@@ -168,6 +195,10 @@ class BasicSlider(QWidget):
     def _format_value_text(self, value: float | int) -> str:
         """Format value for display in numeric text field."""
         if isinstance(value, float):
+            for prefix, multiplier in _METRIC_PREFIXES.items():
+                coeff = abs(value) / multiplier
+                if 0.999 <= coeff < 1000.0:
+                    return f"{value / multiplier:.{self.float_precision}f}{prefix}"
             return f"{value:.{self.float_precision}f}"
         else:
             return str(value)

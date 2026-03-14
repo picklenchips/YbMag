@@ -4,7 +4,14 @@ Translated from C++ PropEnumerationControl.h
 """
 
 from PyQt6.QtCore import QEvent
-from PyQt6.QtWidgets import QComboBox, QLineEdit, QMessageBox, QWidget
+from PyQt6.QtWidgets import (
+    QComboBox,
+    QLineEdit,
+    QMessageBox,
+    QWidget,
+    QSizePolicy,
+    QBoxLayout,
+)
 from typing import Optional
 
 from imagingcontrol4.grabber import Grabber
@@ -40,7 +47,6 @@ class PropEnumerationControl(PropControlBase):
             self.combo.setMinimumWidth(150)  # Wider to show full enum values
             self.combo.setMaxVisibleItems(10)  # Allow scrolling if many items
             # Set combo to expand horizontally
-            from PyQt6.QtWidgets import QSizePolicy
 
             self.combo.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
@@ -55,7 +61,6 @@ class PropEnumerationControl(PropControlBase):
             self.edit.setMinimumHeight(28)
 
         if layout := self.layout():
-            from PyQt6.QtWidgets import QBoxLayout
 
             if self.combo:
                 layout.addWidget(self.combo)

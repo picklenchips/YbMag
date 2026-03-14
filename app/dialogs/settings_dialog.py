@@ -24,12 +24,14 @@ class SettingsDialog(QDialog):
         resource_selector: Any,
         parent=None,
         on_theme_changed: Optional[Callable[[str], None]] = None,
+        on_properties: Optional[Callable[[], None]] = None,
     ):
         super().__init__(parent)
 
         self.setWindowTitle("UI Settings")
         self.resource_selector = resource_selector
         self.on_theme_changed = on_theme_changed
+        self.on_properties = on_properties
 
         self._create_ui()
 
@@ -114,6 +116,14 @@ class SettingsDialog(QDialog):
         # Add some spacing
         main_layout.addStretch()
 
+        # Property dialog button
+        from PyQt6.QtWidgets import QPushButton
+
+        prop_btn = QPushButton("Open Properties Dialog", self)
+        prop_btn.setToolTip("Show advanced device properties (full tree)")
+        prop_btn.clicked.connect(self._on_properties_clicked)
+        main_layout.addWidget(prop_btn)
+
         # Dialog buttons
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -121,6 +131,10 @@ class SettingsDialog(QDialog):
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         main_layout.addWidget(button_box)
+
+    def _on_properties_clicked(self):
+        if self.on_properties:
+            self.on_properties()
 
         self.setLayout(main_layout)
 

@@ -84,6 +84,37 @@ TRIGSRC_DIGITAL_OUT = _cval(_c.trigsrcDigitalOut)
 TRIGSRC_EXTERNAL_1 = _cval(_c.trigsrcExternal1)
 TRIGSRC_EXTERNAL_2 = _cval(_c.trigsrcExternal2)
 
+# Wavegen waveform functions  (ref: WF_SDK/wavegen.py)
+WAVEGEN_CUSTOM = _cval(_c.funcCustom)
+WAVEGEN_SINE = _cval(_c.funcSine)
+WAVEGEN_SQUARE = _cval(_c.funcSquare)
+WAVEGEN_TRIANGLE = _cval(_c.funcTriangle)
+WAVEGEN_NOISE = _cval(_c.funcNoise)
+WAVEGEN_DC = _cval(_c.funcDC)
+WAVEGEN_PULSE = _cval(_c.funcPulse)
+WAVEGEN_TRAPEZIUM = _cval(_c.funcTrapezium)
+WAVEGEN_SINE_POWER = _cval(_c.funcSinePower)
+WAVEGEN_RAMP_UP = _cval(_c.funcRampUp)
+WAVEGEN_RAMP_DOWN = _cval(_c.funcRampDown)
+
+WAVEGEN_FUNCTION_NAMES: Dict[int, str] = {
+    WAVEGEN_CUSTOM: "custom",
+    WAVEGEN_SINE: "sine",
+    WAVEGEN_SQUARE: "square",
+    WAVEGEN_TRIANGLE: "triangle",
+    WAVEGEN_NOISE: "noise",
+    WAVEGEN_DC: "dc",
+    WAVEGEN_PULSE: "pulse",
+    WAVEGEN_TRAPEZIUM: "trapezium",
+    WAVEGEN_SINE_POWER: "sine_power",
+    WAVEGEN_RAMP_UP: "ramp_up",
+    WAVEGEN_RAMP_DOWN: "ramp_down",
+}
+
+_WAVEGEN_FUNCTION_BY_NAME: Dict[str, int] = {
+    v: k for k, v in WAVEGEN_FUNCTION_NAMES.items()
+}
+
 # ---------------------------------------------------------------------------
 # Private constants
 # ---------------------------------------------------------------------------
@@ -117,6 +148,9 @@ _TRIGSLOPE_EITHER = _cval(_c.DwfTriggerSlopeEither)
 
 # Scope filter  (ref: WF_SDK/scope.py)
 _FILTER_DECIMATE = _cval(_c.filterDecimate)
+
+# Analog output node  (ref: WF_SDK/wavegen.py)
+_ANALOGOUT_NODE_CARRIER = _cval(_c.AnalogOutNodeCarrier)
 
 # ---------------------------------------------------------------------------
 # ctypes pointer aliases
@@ -320,6 +354,112 @@ def _declare_signatures() -> None:
     ]
     d.FDwfAnalogInStatusData.restype = ctypes.c_int
 
+    # Analog Out (wavegen)  (ref: WF_SDK/wavegen.py)
+    d.FDwfAnalogOutReset.argtypes = [ctypes.c_int, ctypes.c_int]
+    d.FDwfAnalogOutReset.restype = ctypes.c_int
+
+    d.FDwfAnalogOutNodeEnableSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+    ]
+    d.FDwfAnalogOutNodeEnableSet.restype = ctypes.c_int
+
+    d.FDwfAnalogOutNodeFunctionSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+    ]
+    d.FDwfAnalogOutNodeFunctionSet.restype = ctypes.c_int
+
+    d.FDwfAnalogOutNodeDataSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_double),
+        ctypes.c_int,
+    ]
+    d.FDwfAnalogOutNodeDataSet.restype = ctypes.c_int
+
+    d.FDwfAnalogOutNodeFrequencySet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_double,
+    ]
+    d.FDwfAnalogOutNodeFrequencySet.restype = ctypes.c_int
+
+    d.FDwfAnalogOutNodeAmplitudeSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_double,
+    ]
+    d.FDwfAnalogOutNodeAmplitudeSet.restype = ctypes.c_int
+
+    d.FDwfAnalogOutNodeOffsetSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_double,
+    ]
+    d.FDwfAnalogOutNodeOffsetSet.restype = ctypes.c_int
+
+    d.FDwfAnalogOutNodeSymmetrySet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_double,
+    ]
+    d.FDwfAnalogOutNodeSymmetrySet.restype = ctypes.c_int
+
+    d.FDwfAnalogOutRunSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_double,
+    ]
+    d.FDwfAnalogOutRunSet.restype = ctypes.c_int
+
+    d.FDwfAnalogOutWaitSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_double,
+    ]
+    d.FDwfAnalogOutWaitSet.restype = ctypes.c_int
+
+    d.FDwfAnalogOutRepeatSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+    ]
+    d.FDwfAnalogOutRepeatSet.restype = ctypes.c_int
+
+    d.FDwfAnalogOutConfigure.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+    ]
+    d.FDwfAnalogOutConfigure.restype = ctypes.c_int
+
+    d.FDwfAnalogOutStatus.argtypes = [ctypes.c_int, ctypes.c_int, _P_INT]
+    d.FDwfAnalogOutStatus.restype = ctypes.c_int
+
+    d.FDwfAnalogOutTriggerSourceSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+    ]
+    d.FDwfAnalogOutTriggerSourceSet.restype = ctypes.c_int
+
+    d.FDwfAnalogOutTriggerSlopeSet.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+    ]
+    d.FDwfAnalogOutTriggerSlopeSet.restype = ctypes.c_int
+
 
 _declare_signatures()
 
@@ -432,6 +572,48 @@ class ScopeAcquisition:
     clipped: bool
 
 
+@dataclass
+class WavegenChannelConfig:
+    """Configuration for one analog output (wavegen) channel (0 or 1)."""
+
+    channel: int
+    enabled: bool = False
+    function: int = WAVEGEN_SINE  # use WAVEGEN_* constants
+    frequency: float = 1e3  # Hz
+    amplitude: float = 1.0  # Volts (peak)
+    offset: float = 0.0  # Volts (DC offset)
+    symmetry: float = 50.0  # percentage (0–100)
+    wait: float = 0.0  # seconds before start
+    run_time: float = 0.0  # seconds, 0 = infinite
+    repeat: int = 0  # 0 = infinite
+    custom_data: Optional[List[float]] = None  # voltages for funcCustom
+
+    def __str__(self) -> str:
+        if not self.enabled:
+            return f"W{self.channel}: disabled"
+        fn_name = WAVEGEN_FUNCTION_NAMES.get(self.function, str(self.function))
+        return (
+            f"W{self.channel}({fn_name} "
+            f"{self.frequency:.0f} Hz, "
+            f"{self.amplitude:.3f} V, "
+            f"offset {self.offset:.3f} V)"
+        )
+
+
+@dataclass(frozen=True)
+class WavegenState:
+    """Immutable snapshot of the waveform generator status."""
+
+    running: Tuple[bool, ...]
+    channels: Tuple[WavegenChannelConfig, ...]
+
+    def __str__(self) -> str:
+        lines = ["WavegenState:"]
+        for ch, r in zip(self.channels, self.running):
+            lines.append(f"  {'RUNNING' if r else 'stopped'} {ch}")
+        return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
@@ -481,6 +663,7 @@ class Digilent:
 
     NUM_DIGITAL_CHANNELS = 16
     NUM_SCOPE_CHANNELS = 2
+    NUM_WAVEGEN_CHANNELS = 2
 
     def __init__(self, device_index: int = -1) -> None:
         self._hdwf = ctypes.c_int(0)
@@ -495,6 +678,9 @@ class Digilent:
         ]
         self._scope_configs: List[ScopeChannelConfig] = [
             ScopeChannelConfig(channel=i) for i in range(self.NUM_SCOPE_CHANNELS)
+        ]
+        self._wavegen_configs: List[WavegenChannelConfig] = [
+            WavegenChannelConfig(channel=i) for i in range(self.NUM_WAVEGEN_CHANNELS)
         ]
         self._threshold_triggers: List[ScopeThresholdTrigger] = []
 
@@ -978,10 +1164,257 @@ class Digilent:
                 ctypes.c_int(0),
             )
 
+    # ------------------------------------------------------------------
+    # Analog output — waveform generator
+    # (ref: WF_SDK/wavegen.py)
+    # ------------------------------------------------------------------
+
+    def configure_wavegen_channel(self, config: WavegenChannelConfig) -> None:
+        """Configure one analog output (wavegen) channel without starting it."""
+        with self._lock:
+            self._configure_wavegen_channel_locked(config)
+
+    def _configure_wavegen_channel_locked(self, config: WavegenChannelConfig) -> None:
+        """Internal: configure a wavegen channel while lock is held."""
+        self._require_connected()
+        if not (0 <= config.channel < self.NUM_WAVEGEN_CHANNELS):
+            raise ValueError(f"Invalid wavegen channel index: {config.channel}")
+
+        ch = ctypes.c_int(config.channel)
+        node = ctypes.c_int(_ANALOGOUT_NODE_CARRIER)
+
+        # Enable / disable carrier node
+        self._call(
+            "FDwfAnalogOutNodeEnableSet",
+            self._hdwf,
+            ch,
+            node,
+            ctypes.c_int(int(config.enabled)),
+        )
+
+        if not config.enabled:
+            self._wavegen_configs[config.channel] = config
+            return
+
+        # Waveform function  (ref: WF_SDK/wavegen.py function class)
+        self._call(
+            "FDwfAnalogOutNodeFunctionSet",
+            self._hdwf,
+            ch,
+            node,
+            ctypes.c_int(config.function),
+        )
+
+        # Custom waveform data
+        if config.function == WAVEGEN_CUSTOM and config.custom_data:
+            n = len(config.custom_data)
+            buf = (ctypes.c_double * n)(*config.custom_data)
+            self._call(
+                "FDwfAnalogOutNodeDataSet",
+                self._hdwf,
+                ch,
+                node,
+                buf,
+                ctypes.c_int(n),
+            )
+
+        # Frequency
+        self._call(
+            "FDwfAnalogOutNodeFrequencySet",
+            self._hdwf,
+            ch,
+            node,
+            ctypes.c_double(config.frequency),
+        )
+
+        # Amplitude (peak voltage)
+        self._call(
+            "FDwfAnalogOutNodeAmplitudeSet",
+            self._hdwf,
+            ch,
+            node,
+            ctypes.c_double(config.amplitude),
+        )
+
+        # DC offset
+        self._call(
+            "FDwfAnalogOutNodeOffsetSet",
+            self._hdwf,
+            ch,
+            node,
+            ctypes.c_double(config.offset),
+        )
+
+        # Symmetry (percentage 0–100)
+        self._call(
+            "FDwfAnalogOutNodeSymmetrySet",
+            self._hdwf,
+            ch,
+            node,
+            ctypes.c_double(config.symmetry),
+        )
+
+        # Run time (0 = infinite)
+        self._call(
+            "FDwfAnalogOutRunSet",
+            self._hdwf,
+            ch,
+            ctypes.c_double(config.run_time),
+        )
+
+        # Wait time before start
+        self._call(
+            "FDwfAnalogOutWaitSet",
+            self._hdwf,
+            ch,
+            ctypes.c_double(config.wait),
+        )
+
+        # Repeat count (0 = infinite)
+        self._call(
+            "FDwfAnalogOutRepeatSet",
+            self._hdwf,
+            ch,
+            ctypes.c_int(config.repeat),
+        )
+
+        self._wavegen_configs[config.channel] = config
+
+    def generate_wavegen(self, config: WavegenChannelConfig) -> None:
+        """Configure and immediately start one analog output channel.
+
+        Convenience combining configure + start in a single call
+        (mirrors WF_SDK/wavegen.py ``generate``).
+        """
+        with self._lock:
+            self._configure_wavegen_channel_locked(config)
+            self._call(
+                "FDwfAnalogOutConfigure",
+                self._hdwf,
+                ctypes.c_int(config.channel),
+                ctypes.c_int(1),
+            )
+
+    def start_wavegen(self, channel: int) -> None:
+        """Start (enable) one analog output channel."""
+        with self._lock:
+            self._require_connected()
+            if not (0 <= channel < self.NUM_WAVEGEN_CHANNELS):
+                raise ValueError(f"Invalid wavegen channel index: {channel}")
+            self._call(
+                "FDwfAnalogOutConfigure",
+                self._hdwf,
+                ctypes.c_int(channel),
+                ctypes.c_int(1),
+            )
+
+    def stop_wavegen(self, channel: int) -> None:
+        """Stop (disable) one analog output channel."""
+        with self._lock:
+            if not self._connected:
+                return
+            self._call(
+                "FDwfAnalogOutConfigure",
+                self._hdwf,
+                ctypes.c_int(channel),
+                ctypes.c_int(0),
+            )
+
+    def reset_wavegen(self, channel: int = -1) -> None:
+        """Reset one wavegen channel, or all channels (channel=-1)."""
+        with self._lock:
+            if not self._connected:
+                return
+            self._call(
+                "FDwfAnalogOutReset",
+                self._hdwf,
+                ctypes.c_int(channel),
+            )
+            if channel < 0:
+                self._wavegen_configs = [
+                    WavegenChannelConfig(channel=i)
+                    for i in range(self.NUM_WAVEGEN_CHANNELS)
+                ]
+            else:
+                self._wavegen_configs[channel] = WavegenChannelConfig(channel=channel)
+
+    def set_wavegen_trigger_source(
+        self, channel: int, source: int = TRIGSRC_NONE
+    ) -> None:
+        """Set the trigger source for one analog output channel.
+
+        Use ``TRIGSRC_*`` module constants.
+        """
+        with self._lock:
+            self._require_connected()
+            self._call(
+                "FDwfAnalogOutTriggerSourceSet",
+                self._hdwf,
+                ctypes.c_int(channel),
+                ctypes.c_int(source),
+            )
+
+    def set_wavegen_trigger_slope(
+        self, channel: int, slope: int = _TRIGSLOPE_RISE
+    ) -> None:
+        """Set the trigger slope for one analog output channel."""
+        with self._lock:
+            self._require_connected()
+            self._call(
+                "FDwfAnalogOutTriggerSlopeSet",
+                self._hdwf,
+                ctypes.c_int(channel),
+                ctypes.c_int(slope),
+            )
+
+    @property
+    def wavegen_running(self) -> List[bool]:
+        """Query whether each wavegen channel is currently active."""
+        with self._lock:
+            if not self._connected:
+                return [False] * self.NUM_WAVEGEN_CHANNELS
+            result: List[bool] = []
+            for ch in range(self.NUM_WAVEGEN_CHANNELS):
+                sts = ctypes.c_int()
+                self._call(
+                    "FDwfAnalogOutStatus",
+                    self._hdwf,
+                    ctypes.c_int(ch),
+                    ctypes.byref(sts),
+                )
+                result.append(sts.value == _DWF_STATE_RUNNING)
+            return result
+
+    def get_wavegen_state(self) -> WavegenState:
+        """Return an immutable snapshot of the wavegen status."""
+        with self._lock:
+            if not self._connected:
+                running: Tuple[bool, ...] = tuple(
+                    False for _ in range(self.NUM_WAVEGEN_CHANNELS)
+                )
+            else:
+                running_list: List[bool] = []
+                for ch in range(self.NUM_WAVEGEN_CHANNELS):
+                    sts = ctypes.c_int()
+                    self._call(
+                        "FDwfAnalogOutStatus",
+                        self._hdwf,
+                        ctypes.c_int(ch),
+                        ctypes.byref(sts),
+                    )
+                    running_list.append(sts.value == _DWF_STATE_RUNNING)
+                running = tuple(running_list)
+            return WavegenState(
+                running=running,
+                channels=tuple(self._wavegen_configs),
+            )
+
     def stop_all(self) -> None:
-        """Stop all activity (digital output and scope acquisition)."""
+        """Stop all activity (digital output, scope, and wavegen)."""
         self.stop()
         self.stop_scope()
+        for ch in range(self.NUM_WAVEGEN_CHANNELS):
+            self.stop_wavegen(ch)
 
     # ------------------------------------------------------------------
     # Cross-trigger: scope -> digital
@@ -1113,6 +1546,21 @@ class Digilent:
                 }
                 for s in self._scope_configs
             ],
+            "wavegen_channels": [
+                {
+                    "channel": w.channel,
+                    "enabled": w.enabled,
+                    "function": WAVEGEN_FUNCTION_NAMES.get(w.function, str(w.function)),
+                    "frequency": w.frequency,
+                    "amplitude": w.amplitude,
+                    "offset": w.offset,
+                    "symmetry": w.symmetry,
+                    "wait": w.wait,
+                    "run_time": w.run_time,
+                    "repeat": w.repeat,
+                }
+                for w in self._wavegen_configs
+            ],
         }
 
     def import_config(self, data: dict) -> None:
@@ -1123,6 +1571,14 @@ class Digilent:
         for sc_data in data.get("scope_channels", []):
             cfg = ScopeChannelConfig(**sc_data)
             self.configure_scope_channel(cfg)
+        for wg_data in data.get("wavegen_channels", []):
+            wg_data = dict(wg_data)  # copy to avoid mutating input
+            fn = wg_data.get("function")
+            if isinstance(fn, str):
+                wg_data["function"] = _WAVEGEN_FUNCTION_BY_NAME.get(fn, WAVEGEN_SINE)
+            wg_data.pop("custom_data", None)  # not serialized in export
+            cfg = WavegenChannelConfig(**wg_data)
+            self.configure_wavegen_channel(cfg)
 
 
 if __name__ == "__main__":
@@ -1193,6 +1649,7 @@ if __name__ == "__main__":
             print(
                 f"Running D{channel} at {freq_hz} Hz, {duty_pct}% duty. Press Ctrl+C to stop.\n"
             )
+            print("Current pattern state:", digilent.get_pattern_state())
             q = input("Press Enter to reconfigure or 'q' to quit.\n")
             if q in ["q", "quit", "exit"]:
                 break

@@ -6,6 +6,15 @@ waveform preview, scope acquisition, and cross-trigger support.  Wraps the
 Qt-free ``devices/digilent.py`` driver using the project's standard patterns:
 ``ThreadPoolExecutor`` background polling, ``_PollSignals`` for cross-thread
 communication, and ``BasicSlider`` for feedback-loop-safe controls.
+
+Widgets:
+- ``_ConnectionWidget``: Device discovery, selection, and connect/disconnect controls.
+- ``_DigitalChannelWidget``: Controls for one digital output channel.
+- ``_ChannelSettingsPanel``: Scrollable panel containing digital channel widgets + Add button.
+- ``_WaveformPreviewWidget``: Custom-painted waveform display showing the programmed digital patterns.
+- (Planned) ``_ScopeDisplayWidget``: Custom-painted scope display showing acquired waveforms.
+- (Planned) Trigger configuration panel with support for all trigger sources and types.
+
 """
 
 from __future__ import annotations
@@ -62,6 +71,7 @@ from devices.digilent import (
     ScopeAcquisition,
     ScopeChannelConfig,
     ScopeThresholdTrigger,
+    WavegenChannelConfig,
     enumerate_devices,
     TRIGSRC_NONE,
     TRIGSRC_PC,
@@ -69,8 +79,14 @@ from devices.digilent import (
     TRIGSRC_DIGITAL_IN,
     TRIGSRC_EXTERNAL_1,
     TRIGSRC_EXTERNAL_2,
+    WAVEGEN_SINE,
 )
 from dialogs.controls.basic_slider import BasicSlider
+from dialogs.controls.engineering_slider import (
+    EngineeringSlider,
+    SI_FREQ_PREFIXES,
+    SI_TIME_PREFIXES,
+)
 from resources.style_manager import get_style_manager
 
 SETTINGS_PATH = Path(__file__).parent.parent / "settings" / "settings.json"
@@ -298,7 +314,14 @@ class _DigitalChannelWidget(QFrame):
         )
         header.addWidget(swatch)
 
-        self._name_edit = QLineEdit(name or f"CH {self._channel}")
+        # Channel number (non-editable, bold) with color swatch
+        ch_label = QLabel(f"CH{self._channel}", parent=self)
+        # set color to match swatch, but darker for contrast
+        ch_label.setStyleSheet(f"font-weight: bold; color: {self._color.name()};")
+        header.addWidget(ch_label)
+
+        # Channel name (editable)
+        self._name_edit = QLineEdit(name if name else f"CH{self._channel}", parent=self)
         self._name_edit.setMaximumWidth(140)
         self._name_edit.setStyleSheet("font-weight: bold;")
         self._name_edit.editingFinished.connect(self._emit_changed)
@@ -322,12 +345,15 @@ class _DigitalChannelWidget(QFrame):
 
         # -- Frequency slider
         p_row = QHBoxLayout()
-        p_row.addWidget(QLabel("Freq"))
+        p_row.addWidget(QLabel("  Freq"))
         init_freq = 1.0 / config.period if config.period > 0 else 1000.0
-        self._freq_slider = BasicSlider(
-            1.0, 1e6, init_freq, 1.0, float_precision=1, unit="Hz"
+        self._freq_slider = EngineeringSlider(
+            SI_FREQ_PREFIXES,
+            unit="Hz",
+            default=init_freq,
         )
         self._freq_slider.valueChanged.connect(self._on_param_changed)
+        self._freq_slider.valueChanged.connect(self._on_freq_changed)
         p_row.addWidget(self._freq_slider, stretch=1)
         self._period_label = QLabel()
         self._period_label.setMinimumWidth(90)
@@ -338,10 +364,13 @@ class _DigitalChannelWidget(QFrame):
 
         # -- Pulse width slider
         d_row = QHBoxLayout()
-        d_row.addWidget(QLabel("PW"))
+        d_row.addWidget(QLabel("    PW"))
         init_pw = config.period * config.duty_cycle
-        self._pw_slider = BasicSlider(
-            1e-6, 1.0, init_pw, 1e-6, float_precision=6, unit="s"
+        self._pw_slider = EngineeringSlider(
+            SI_TIME_PREFIXES,
+            unit="s",
+            default=init_pw,
+            max_value=config.period if config.period > 0 else 1.0,
         )
         self._pw_slider.valueChanged.connect(self._on_param_changed)
         d_row.addWidget(self._pw_slider, stretch=1)
@@ -355,8 +384,10 @@ class _DigitalChannelWidget(QFrame):
         # -- Delay slider
         dl_row = QHBoxLayout()
         dl_row.addWidget(QLabel("Delay"))
-        self._delay_slider = BasicSlider(
-            0.0, 1.0, config.delay, 1e-6, float_precision=6, unit="s"
+        self._delay_slider = EngineeringSlider(
+            SI_TIME_PREFIXES,
+            unit="s",
+            default=config.delay,
         )
         self._delay_slider.valueChanged.connect(self._on_param_changed)
         dl_row.addWidget(self._delay_slider, stretch=1)
@@ -401,7 +432,7 @@ class _DigitalChannelWidget(QFrame):
         freq = self._freq_slider.value
         period = 1.0 / freq if freq > 0 else 1.0
         pw = self._pw_slider.value
-        duty = max(0.01, min(0.99, pw / period)) if period > 0 else 0.5
+        duty = max(1e-9, min(0.99, pw / period)) if period > 0 else 0.5
         return DigitalChannelConfig(
             channel=self._channel,
             enabled=self._enable_btn.isChecked(),
@@ -443,6 +474,11 @@ class _DigitalChannelWidget(QFrame):
                 "QPushButton { background-color: #555; color: #ccc; "
                 "border-radius: 4px; padding: 2px 8px; }"
             )
+
+    def _on_freq_changed(self, freq: float) -> None:
+        """Update pulse-width max to the period (1/freq)."""
+        if freq > 0:
+            self._pw_slider.max = 1.0 / freq
 
     def _on_param_changed(self, _=None) -> None:
         self._update_readouts()
@@ -943,6 +979,7 @@ class _GlobalControlsWidget(QWidget):
 
     startRequested = pyqtSignal()
     stopRequested = pyqtSignal()
+    restartRequested = pyqtSignal()
     triggerRequested = pyqtSignal()
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -969,19 +1006,18 @@ class _GlobalControlsWidget(QWidget):
 
         layout.addStretch()
 
-        # Action buttons
-        self._start_btn = QPushButton("\u25b6 Start")
-        self._start_btn.setStyleSheet(
-            "QPushButton { background-color: #2e7d32; color: white; "
-            "padding: 4px 12px; border-radius: 4px; font-weight: bold; }"
-        )
-        self._start_btn.clicked.connect(self.startRequested.emit)
-        layout.addWidget(self._start_btn)
+        # Action buttons — single toggle for Start/Stop
+        self._running = False
+        self._toggle_btn = QPushButton("\u25b6 Start")
+        self._toggle_btn.setFixedWidth(100)
+        self._style_toggle(False)
+        self._toggle_btn.clicked.connect(self._on_toggle_clicked)
+        layout.addWidget(self._toggle_btn)
 
-        self._stop_btn = QPushButton("\u25a0 Stop")
-        self._stop_btn.setEnabled(False)
-        self._stop_btn.clicked.connect(self.stopRequested.emit)
-        layout.addWidget(self._stop_btn)
+        self._restart_btn = QPushButton("\u21bb Restart")
+        self._restart_btn.setEnabled(False)
+        self._restart_btn.clicked.connect(self.restartRequested.emit)
+        layout.addWidget(self._restart_btn)
 
         self._trigger_btn = QPushButton("Trigger")
         self._trigger_btn.setEnabled(False)
@@ -997,9 +1033,30 @@ class _GlobalControlsWidget(QWidget):
     def repeat_count(self) -> int:
         return self._repeat_spin.value()
 
+    def _on_toggle_clicked(self) -> None:
+        if self._running:
+            self.stopRequested.emit()
+        else:
+            self.startRequested.emit()
+
+    def _style_toggle(self, running: bool) -> None:
+        if running:
+            self._toggle_btn.setText("\u25a0 Stop")
+            self._toggle_btn.setStyleSheet(
+                "QPushButton { background-color: #c62828; color: white; "
+                "padding: 4px 12px; border-radius: 4px; font-weight: bold; }"
+            )
+        else:
+            self._toggle_btn.setText("\u25b6 Start")
+            self._toggle_btn.setStyleSheet(
+                "QPushButton { background-color: #2e7d32; color: white; "
+                "padding: 4px 12px; border-radius: 4px; font-weight: bold; }"
+            )
+
     def update_running(self, running: bool) -> None:
-        self._start_btn.setEnabled(not running)
-        self._stop_btn.setEnabled(running)
+        self._running = running
+        self._style_toggle(running)
+        self._restart_btn.setEnabled(running)
         is_pc_trigger = self._trigger_combo.currentIndex() == 1  # Software (PC)
         self._trigger_btn.setEnabled(running and is_pc_trigger)
 
@@ -1233,6 +1290,117 @@ class _ScopePanel(QGroupBox):
 
 
 # ---------------------------------------------------------------------------
+# Wavegen panel
+# ---------------------------------------------------------------------------
+
+
+class _WavegenPanel(QWidget):
+    """Always-visible 10 MHz sine-wave toggle on W1.
+
+    If `set_amplitude` is provided, the amplitude slider is hidden and the wavegen is fixed at that amplitude.
+    """
+
+    startRequested = pyqtSignal(object)  # WavegenChannelConfig
+    stopRequested = pyqtSignal(int)  # channel index
+
+    def __init__(self, parent: Optional[QWidget] = None, set_amplitude: float = 2.0):
+        super().__init__(parent)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(8, 4, 8, 4)
+        # left align
+        row.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+        # Color swatch
+        swatch = QWidget()
+        swatch.setFixedSize(12, 12)
+        swatch.setStyleSheet("background-color: #f59e0b; border-radius: 2px;")
+        row.addWidget(swatch)
+        row.addWidget(QLabel("W1"))
+        lbl = QLabel("10 MHz Reference")
+        # color border of label to match swatch
+        lbl.setStyleSheet(
+            "font-weight: bold; border: 1px solid #f59e0b; padding: 2px 4px; border-radius: 4px;"
+        )
+        row.addWidget(lbl)
+
+        # row.addStretch()
+
+        self._toggle_btn = QPushButton("OFF")
+        self._toggle_btn.setCheckable(True)
+        self._toggle_btn.setFixedWidth(64)
+        self._toggle_btn.toggled.connect(self._on_toggled)
+        self._style_btn(False)
+        row.addWidget(self._toggle_btn)
+
+        # Amplitude slider
+        self._amplitude = set_amplitude or 0.0
+        if not set_amplitude:
+            amp_row = QHBoxLayout()
+            amp_row.addWidget(QLabel("Amplitude"))
+            self._amp_slider = BasicSlider(
+                1.0, 10.0, 3.0, 0.1, float_precision=1, unit="V"
+            )
+            self._amp_slider.valueChanged.connect(self._on_amplitude_changed)
+            amp_row.addWidget(self._amp_slider, stretch=1)
+            row.addLayout(amp_row)
+
+    # -- ON/OFF --
+    @property
+    def amplitude(self):
+        if self._amplitude:
+            return self._amplitude
+        return self._amp_slider.value
+
+    def _on_toggled(self, on: bool) -> None:
+        self._style_btn(on)
+        if on:
+            cfg = WavegenChannelConfig(
+                channel=0,
+                enabled=True,
+                function=WAVEGEN_SINE,
+                frequency=10e6,
+                amplitude=self.amplitude,
+            )
+            self.startRequested.emit(cfg)
+        else:
+            self.stopRequested.emit(0)
+
+    def _on_amplitude_changed(self, _value: float) -> None:
+        """only used with amplitude slider visible"""
+        if self._toggle_btn.isChecked():
+            cfg = WavegenChannelConfig(
+                channel=0,
+                enabled=True,
+                function=WAVEGEN_SINE,
+                frequency=10e6,
+                amplitude=self.amplitude,
+            )
+            self.startRequested.emit(cfg)
+
+    def _style_btn(self, on: bool) -> None:
+        if on:
+            self._toggle_btn.setText("ON")
+            self._toggle_btn.setStyleSheet(
+                "QPushButton { background-color: #2e7d32; color: white; "
+                "border-radius: 4px; padding: 2px 8px; font-weight: bold; }"
+            )
+        else:
+            self._toggle_btn.setText("OFF")
+            self._toggle_btn.setStyleSheet(
+                "QPushButton { background-color: #555; color: #ccc; "
+                "border-radius: 4px; padding: 2px 8px; }"
+            )
+
+    def set_on(self, on: bool) -> None:
+        """Programmatically set the toggle state without emitting signals."""
+        self._toggle_btn.blockSignals(True)
+        self._toggle_btn.setChecked(on)
+        self._style_btn(on)
+        self._toggle_btn.blockSignals(False)
+
+
+# ---------------------------------------------------------------------------
 # Status bar
 # ---------------------------------------------------------------------------
 
@@ -1306,11 +1474,13 @@ class DigilentDialog(QDialog):
         self._status_timer.timeout.connect(self._on_status_tick)
         self._status_timer.start(100)
 
-        # Populate device list
+        # Populate device list and auto-connect if a device is found
         self._connection.refresh_devices()
+        if self._connection.selected_device_index() >= 0:
+            self._connect()
 
     def _build_ui(self) -> None:
-        self.setWindowTitle("Digilent Pattern Generator")
+        self.setWindowTitle("Digilent Controller (disconnects on close)")
         self.setMinimumSize(800, 550)
         self.resize(1050, 700)
 
@@ -1321,6 +1491,12 @@ class DigilentDialog(QDialog):
         self._connection = _ConnectionWidget()
         self._connection.connected.connect(self._on_connect_toggle)
         root.addWidget(self._connection)
+
+        # Wavegen (10 MHz reference) — always visible, right under connection
+        self._wavegen_panel = _WavegenPanel()
+        self._wavegen_panel.startRequested.connect(self._on_wavegen_start)
+        self._wavegen_panel.stopRequested.connect(self._on_wavegen_stop)
+        root.addWidget(self._wavegen_panel)
 
         # Splitter: channel settings | waveform preview
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -1341,6 +1517,7 @@ class DigilentDialog(QDialog):
         self._global_controls = _GlobalControlsWidget()
         self._global_controls.startRequested.connect(self._on_start)
         self._global_controls.stopRequested.connect(self._on_stop)
+        self._global_controls.restartRequested.connect(self._on_restart)
         self._global_controls.triggerRequested.connect(self._on_trigger)
         root.addWidget(self._global_controls)
 
@@ -1413,15 +1590,16 @@ class DigilentDialog(QDialog):
         print("[DigilentDialog] _disconnect called")
         if self._digilent:
             try:
-                self._digilent.stop()
+                self._digilent.stop_all()
             except Exception as e:
-                print(f"[DigilentDialog] stop() exception (ignored): {e}")
+                print(f"[DigilentDialog] stop_all() exception (ignored): {e}")
             self._digilent.close()
             print("[DigilentDialog] device closed")
             self._digilent = None
         self._is_connected = False
         self._connection.set_connected(False)
         self._global_controls.update_running(False)
+        self._wavegen_panel.set_on(False)
 
     # -- Channel config changes --
 
@@ -1438,8 +1616,16 @@ class DigilentDialog(QDialog):
 
     def _apply_config_worker(self, config: DigitalChannelConfig) -> None:
         try:
-            if self._digilent and self._digilent.connected:
-                self._digilent.configure_digital_channel(config)
+            d = self._digilent
+            if not d or not d.connected:
+                return
+            was_running = d.is_running
+            if was_running:
+                d.stop()
+            d.configure_digital_channel(config)
+            if was_running:
+                d.start()
+                self._poll_signals.pattern_status.emit()
         except Exception as e:
             self._poll_signals.error.emit(str(e))
 
@@ -1480,6 +1666,28 @@ class DigilentDialog(QDialog):
         if self._digilent:
             self._executor.submit(self._stop_worker)
 
+    def _on_restart(self) -> None:
+        """Stop then start pattern generation."""
+        if self._digilent and self._is_connected:
+            self._executor.submit(self._restart_worker)
+
+    def _restart_worker(self) -> None:
+        try:
+            if self._digilent:
+                self._digilent.stop()
+                self._poll_signals.pattern_status.emit()
+                # Re-configure and start
+                configs = self._channel_panel.get_all_configs()
+                self._digilent.configure_all_digital(configs)
+                self._digilent.set_trigger_source(
+                    self._global_controls.trigger_source_index
+                )
+                self._digilent.set_repeat_count(self._global_controls.repeat_count)
+                self._digilent.start()
+                self._poll_signals.pattern_status.emit()
+        except Exception as e:
+            self._poll_signals.error.emit(str(e))
+
     def _stop_worker(self) -> None:
         try:
             if self._digilent:
@@ -1496,6 +1704,35 @@ class DigilentDialog(QDialog):
         try:
             if self._digilent:
                 self._digilent.trigger()
+        except Exception as e:
+            self._poll_signals.error.emit(str(e))
+
+    # -- Wavegen --
+
+    def _on_wavegen_start(self, config: WavegenChannelConfig) -> None:
+        if not self._digilent or not self._is_connected:
+            QMessageBox.warning(self, "Not Connected", "Connect to a device first.")
+            self._wavegen_panel.set_on(False)
+            return
+        self._executor.submit(self._wavegen_start_worker, config)
+
+    def _wavegen_start_worker(self, config: WavegenChannelConfig) -> None:
+        try:
+            if self._digilent and self._digilent.connected:
+                self._digilent.generate_wavegen(config)
+                wg = self._digilent.get_wavegen_state()
+                print(f"[wavegen] started: {wg}")
+        except Exception as e:
+            self._poll_signals.error.emit(str(e))
+
+    def _on_wavegen_stop(self, channel: int) -> None:
+        if self._digilent and self._is_connected:
+            self._executor.submit(self._wavegen_stop_worker, channel)
+
+    def _wavegen_stop_worker(self, channel: int) -> None:
+        try:
+            if self._digilent and self._digilent.connected:
+                self._digilent.stop_wavegen(channel)
         except Exception as e:
             self._poll_signals.error.emit(str(e))
 
@@ -1543,7 +1780,6 @@ class DigilentDialog(QDialog):
             return
         self._poll_busy = True
         self._executor.submit(self._poll_worker)
-        print("[DigilentDialog] poll submitted", end="\r")
 
     def _poll_worker(self) -> None:
         try:
