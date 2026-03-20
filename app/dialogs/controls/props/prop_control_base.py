@@ -1,6 +1,8 @@
 """
 Base class for property controls
 Translated from C++ PropControlBase.h
+
+NEW: also includes MultiPropControlBase, which can handle multiple properties with a single control (e.g. binning/decimation)
 """
 
 from PyQt6.QtCore import QEvent, QTime, QTimer
@@ -13,7 +15,7 @@ from imagingcontrol4.sink import Sink
 from imagingcontrol4.display import Display
 from imagingcontrol4.properties import Property
 
-MS_TIMEOUT = 100
+CAMERA_MS_TIMEOUT = 100
 
 @dataclass
 class StreamRestartInfo:
@@ -52,10 +54,11 @@ class MultiPropControlBase(QWidget):
         self._is_destroyed = False  # Flag to track if widget is being destroyed
 
         # set up timer for delayed updates
+        # MS_TIMEOUT is the minimum time between updates - if multiple notifications come in faster than this, they will be coalesced into a single update after the timeout
         self.prev_update = QTime.currentTime()
         self.final_update = QTimer()
         self.final_update.setSingleShot(True)
-        self.final_update.setInterval(MS_TIMEOUT)
+        self.final_update.setInterval(CAMERA_MS_TIMEOUT)
         self.final_update.timeout.connect(self._on_final_update_timeout)
 
         # Callbacks that can be registered by subclasses or external code
@@ -74,25 +77,31 @@ class MultiPropControlBase(QWidget):
         return self._props_list[self.idx]
 
     @prop.setter
-    def prop(self, new_value: Any) -> None:
-        """set value of currently active property"""
-        prop = self.prop
+    def prop(self, value: Any) -> None:
+        """set value of currently active property. instead of `prop_set_value`"""
+        self.set_prop(self.idx, value)
+
+    def set_prop(self, idx: int, value: Any) -> bool:
+        if idx < 0 or idx >= len(self._props_list):
+            raise IndexError("Property index out of range")
+        prop = self._props_list[idx]
 
         def set_func(value):
             prop.value = value  # type: ignore
 
-        self.prop_set_value(new_value, set_func)
-
-    def prop_set_value(self, value: Any, set_func: Callable) -> bool:
-        """Set property value with stream restart handling"""
         restart_info = self.stop_stream_if_required()
-
         try:
             set_func(value)
             return self.restart_stream(restart_info)
         except Exception as e:
             self.restart_stream(restart_info)
             return False
+
+    def get_prop(self, idx: int) -> Any:
+        if idx < 0 or idx >= len(self._props_list):
+            raise IndexError("Property index out of range")
+        prop = self._props_list[idx]
+        return prop.value  # type: ignore
 
     def _on_destroyed(self):
         """Called when widget is being destroyed"""
@@ -124,6 +133,11 @@ class MultiPropControlBase(QWidget):
         """Python destructor - unregister notification"""
         self._unregister_notifications()
 
+    def on_prop_selected(self):
+        """Called when property control gains focus"""
+        if self.prop_selected_func:
+            self.prop_selected_func(self.prop)
+
     def should_display_as_locked(self) -> bool:
         """Check if property should be displayed as locked"""
         try:
@@ -143,10 +157,7 @@ class MultiPropControlBase(QWidget):
             return StreamRestartInfo()
 
         try:
-            if not self.prop.is_likely_locked_by_stream:
-                return StreamRestartInfo()
-
-            if not self.grabber.is_streaming:
+            if not (self.prop.is_likely_locked_by_stream and self.grabber.is_streaming):
                 return StreamRestartInfo()
 
             start_option = (
@@ -173,10 +184,7 @@ class MultiPropControlBase(QWidget):
 
     def restart_stream(self, restart_info: StreamRestartInfo) -> bool:
         """Restart stream with given info"""
-        if not self.grabber:
-            return True
-
-        if not restart_info.do_restart:
+        if not self.grabber or not restart_info.do_restart:
             return True
 
         info = restart_info
@@ -202,7 +210,7 @@ class MultiPropControlBase(QWidget):
             self._is_destroyed = True
 
     def _on_final_update_timeout(self):
-        """Timer callback for delayed update (matches C++ final_update_callback)"""
+        """Timer callback for delayed update (matches C++ final_update_callback). TODO: any cases where this is different than _schedule_update?"""
         self._schedule_update()
 
     def customEvent(self, event: QEvent):
@@ -211,7 +219,7 @@ class MultiPropControlBase(QWidget):
             if self._is_destroyed:
                 return
             current_time = QTime.currentTime()
-            if current_time > self.prev_update.addMSecs(MS_TIMEOUT):
+            if current_time > self.prev_update.addMSecs(CAMERA_MS_TIMEOUT):
                 try:
                     self.update_all()
                 except Exception:

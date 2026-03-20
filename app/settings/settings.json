@@ -14,21 +14,6 @@
   },
   "power_supplies": {
     "DP8B240900562": {
-      "name": "bottom",
-      "model": "DP832A",
-      "channels": {
-        "1": {
-          "name": "+x"
-        },
-        "2": {
-          "name": "-y"
-        },
-        "3": {
-          "name": "+y"
-        }
-      }
-    },
-    "DP8B240900555": {
       "name": "top",
       "model": "DP832A",
       "channels": {
@@ -40,6 +25,21 @@
         },
         "3": {
           "name": "-x"
+        }
+      }
+    },
+    "DP8B240900555": {
+      "name": "bottom",
+      "model": "DP832A",
+      "channels": {
+        "1": {
+          "name": "+x"
+        },
+        "2": {
+          "name": "-y"
+        },
+        "3": {
+          "name": "+y"
         }
       }
     },
@@ -60,7 +60,9 @@
   "digilent": {
     "last_device_serial": "SN:210321A7F89D",
     "channel_names": {
-      "0": "Trigger"
+      "0": "AOM Switch",
+      "2": "Camera",
+      "4": "None"
     },
     "presets": {
       "_last_session": {
@@ -73,10 +75,30 @@
             "delay": 0.0,
             "pulse_count": 0,
             "idle_state": false
+          },
+          {
+            "channel": 2,
+            "enabled": true,
+            "period": 0.001,
+            "duty_cycle": 0.19999999999999998,
+            "delay": 0.0,
+            "pulse_count": 0,
+            "idle_state": false
+          },
+          {
+            "channel": 4,
+            "enabled": true,
+            "period": 0.00016666666666666666,
+            "duty_cycle": 0.018000000000000002,
+            "delay": 0.0,
+            "pulse_count": 7,
+            "idle_state": false
           }
         ],
         "channel_names": {
-          "0": "Trigger"
+          "0": "AOM Switch",
+          "2": "Camera",
+          "4": "None"
         }
       },
       "trigger_and_burst": {
@@ -124,11 +146,49 @@
         },
         "trigger_source": 0,
         "repeat_count": 0
+      },
+      "default": {
+        "digital_channels": [
+          {
+            "channel": 0,
+            "enabled": true,
+            "period": 0.001,
+            "duty_cycle": 0.001,
+            "delay": 0.0,
+            "pulse_count": 0,
+            "idle_state": false
+          },
+          {
+            "channel": 2,
+            "enabled": true,
+            "period": 0.001,
+            "duty_cycle": 0.19999999999999998,
+            "delay": 0.0,
+            "pulse_count": 0,
+            "idle_state": false
+          },
+          {
+            "channel": 4,
+            "enabled": true,
+            "period": 0.001,
+            "duty_cycle": 0.001,
+            "delay": 0.0,
+            "pulse_count": 0,
+            "idle_state": true
+          }
+        ],
+        "channel_names": {
+          "0": "AOM Switch",
+          "2": "Camera",
+          "4": "None"
+        },
+        "trigger_source": 0,
+        "repeat_count": 0
       }
     }
   },
   "default_image_directory": "C:/Shared/Yb/Dynamics/Control/images",
-  "default_image_filename": "capture",
+  "default_image_filename": "260319",
   "default_image_extension": ".png",
   "use_default_image_filename": true,
   "default_video_directory": "C:/Shared/Yb/Dynamics/Control/videos",

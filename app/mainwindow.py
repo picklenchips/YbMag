@@ -234,6 +234,10 @@ class MainWindow(QMainWindow):
         self.updateControls()
 
     def createUI(self):
+        # Camera Reset action
+        self.camera_reset_act = QAction("&Reset Camera", self)
+        self.camera_reset_act.setStatusTip("Reset camera hardware (DeviceReset)")
+        self.camera_reset_act.triggered.connect(self.onCameraReset)
         self.resize(1024, 768)
 
         selector = get_resource_selector()
@@ -418,6 +422,7 @@ class MainWindow(QMainWindow):
         device_menu.addAction(self.undo_roi_act)
         device_menu.addAction(self.redo_roi_act)
         device_menu.addSeparator()
+        device_menu.addAction(self.camera_reset_act)
         device_menu.addAction(self.close_device_act)
 
         instruments_menu = menubar.addMenu("&Instruments")
@@ -514,6 +519,20 @@ class MainWindow(QMainWindow):
         selector = get_resource_selector()
         style_manager = get_style_manager()
         style_manager.apply_theme(selector.get_theme())
+
+    def onCameraReset(self):
+        try:
+            if self.grabber.device_property_map is not None:
+                self.grabber.device_property_map.set_value("DeviceReset", True)
+                QMessageBox.information(
+                    self, "Camera Reset", "Camera reset command sent."
+                )
+            else:
+                QMessageBox.warning(
+                    self, "Camera Reset", "No device property map available."
+                )
+        except Exception as e:
+            QMessageBox.critical(self, "Camera Reset", f"Failed to reset camera: {e}")
 
     def onCloseDevice(self):
         print(
@@ -1004,12 +1023,12 @@ class MainWindow(QMainWindow):
             height_prop = prop_map.find(PropId.HEIGHT)
 
             # Cast to PropInteger to access maximum attribute
-            max_width = 1920  # default fallback
-            max_height = 1080  # default fallback
+            max_width = 1800  # default fallback
+            max_height = 1200  # default fallback
             if width_prop and isinstance(width_prop, PropInteger):
-                max_width = width_prop.maximum
+                max_width = min(width_prop.maximum, max_width)
             if height_prop and isinstance(height_prop, PropInteger):
-                max_height = height_prop.maximum
+                max_height = min(height_prop.maximum, max_height)
 
             # Apply full sensor ROI
             self._apply_roi_state(0, 0, max_width, max_height)
