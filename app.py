@@ -1,9 +1,11 @@
 from imagingcontrol4.library import Library
 from PyQt6.QtWidgets import QApplication
 from gui import MainWindow
+from gui.logging_setup import setup_logging
 
 
 def app_main():
+    setup_logging()
     with Library.init_context():
         argv = []
         app = QApplication(argv)

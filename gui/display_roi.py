@@ -4,6 +4,7 @@ Window displaying image data from an IC4 stream, with support for ROI selection 
 See `.app/display.py` for the base display widget without ROI/pixel info features.
 """
 
+import logging
 from weakref import ref
 
 from PyQt6.QtCore import (
@@ -28,6 +29,8 @@ from PyQt6.QtGui import (
 from imagingcontrol4.display import Display, ExternalOpenGLDisplay
 from imagingcontrol4.imagebuffer import ImageBuffer
 from OpenGL import GL
+
+logger = logging.getLogger(__name__)
 
 
 class _DisplayWindowROI(QWindow):
@@ -114,7 +117,7 @@ class _DisplayWindowROI(QWindow):
             try:
                 self._draw_roi_overlay(w, h, ratio)
             except Exception:
-                # Disable overlay if something goes wrong; keep video alive.
+                logger.warning("ROI overlay draw failed; disabling overlay", exc_info=True)
                 self._roi_start = None
                 self._roi_end = None
                 self._roi_is_drawing = False
@@ -475,6 +478,7 @@ class DisplayWidgetROI(DisplayWidgetBase):
             pixel_value = np_array[img_y, img_x]
             return (img_x, img_y, pixel_value)
         except Exception:
+            logger.debug("Failed to sample pixel value from buffer", exc_info=True)
             return None
 
     def _format_pixel_info(self, pos: QPoint) -> str:
@@ -573,9 +577,7 @@ class DisplayWidgetROI(DisplayWidgetBase):
             # Emit signal with camera coordinates
             roi = self.get_roi_camera_coords()
             if roi:
-                print(
-                    f"ROI selected: offset_x={roi[0]}, offset_y={roi[1]}, width={roi[2]}, height={roi[3]}"
-                )
+                logger.debug("ROI selected: offset_x=%d, offset_y=%d, width=%d, height=%d", *roi)
                 self.roi_selected.emit(*roi)
 
     def leaveEvent(self, event):

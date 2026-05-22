@@ -1,8 +1,11 @@
 """UI stylesheet manager for light/dark themes."""
 
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Literal, Optional
+
+logger = logging.getLogger(__name__)
 
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import QApplication
@@ -98,6 +101,7 @@ class StyleManager:
             try:
                 self._base_qss = qss_path.read_text(encoding="utf-8")
             except Exception:
+                logger.warning("Failed to load base QSS from %s; using empty stylesheet", qss_path, exc_info=True)
                 self._base_qss = ""
         return self._base_qss
 

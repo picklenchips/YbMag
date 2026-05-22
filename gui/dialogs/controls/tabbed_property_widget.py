@@ -3,6 +3,8 @@ Tabbed property widget – properties organized in category tabs with
 global search, match highlighting, and a shared info box.
 """
 
+import logging
+
 from PyQt6.QtCore import Qt, QModelIndex, QItemSelection, QRegularExpression
 from PyQt6.QtWidgets import (
     QWidget,
@@ -38,6 +40,8 @@ from .property_tree_widget import (
 )
 from .props.prop_control_base import StreamRestartFilterFunction
 from .property_info_box import PropertyInfoBox
+
+logger = logging.getLogger(__name__)
 
 
 # Semi-transparent orange overlay for search-match highlighting
@@ -162,6 +166,7 @@ class TabbedPropertyWidget(QWidget):
         try:
             root = self._property_map.find_category("Root")
         except Exception:
+            logger.warning("Failed to find Root category in property map", exc_info=True)
             return
 
         # Collect top-level sub-categories
@@ -171,7 +176,7 @@ class TabbedPropertyWidget(QWidget):
                 if isinstance(feat, PropCategory):
                     categories.append(feat)
         except Exception:
-            pass
+            logger.warning("Failed to enumerate property categories", exc_info=True)
 
         if categories:
             for cat in categories:
@@ -185,7 +190,7 @@ class TabbedPropertyWidget(QWidget):
             try:
                 self._add_tab(map_name, pmap.find_category("Root"), is_additional=True)
             except Exception:
-                pass
+                logger.warning("Failed to add property tab for map '%s'", map_name, exc_info=True)
 
     def _add_tab(
         self,
@@ -270,7 +275,7 @@ class TabbedPropertyWidget(QWidget):
                 tab.proxy.dataChanged.disconnect()
                 tab.proxy.layoutChanged.disconnect()
             except Exception:
-                pass
+                logger.debug("Failed to disconnect proxy signals during clear", exc_info=True)
             tab.proxy.setSourceModel(None)
             # Explicitly break node reference cycles so IC4 handles are freed
             if tab.model is not None:
@@ -363,7 +368,7 @@ class TabbedPropertyWidget(QWidget):
                     ):
                         return True
                 except Exception:
-                    pass
+                    logger.debug("Failed to check property availability during filter", exc_info=True)
         return False
 
     # ── Selection → info box ─────────────────────────────────────

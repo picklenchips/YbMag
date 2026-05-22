@@ -1,3 +1,4 @@
+import logging
 from PyQt6.QtCore import QTimer, pyqtSignal, QEvent, QTime
 from PyQt6.QtWidgets import QApplication, QMessageBox, QWidget, QHBoxLayout, QLabel, QComboBox, QSizePolicy
 from typing import Optional
@@ -11,6 +12,8 @@ from .props.prop_control_base import (
     StreamRestartFilterFunction,
     MultiPropControlBase,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class BinningDecimationControl(MultiPropControlBase):
@@ -101,11 +104,11 @@ class BinningDecimationControl(MultiPropControlBase):
             try:
                 binning_val = self.get_prop(0)
             except Exception:
-                pass
+                logger.debug("Failed to read binning property", exc_info=True)
             try:
                 decimation_val = self.get_prop(2)
             except Exception:
-                pass
+                logger.debug("Failed to read decimation property", exc_info=True)
             idx = 0
             if binning_val == 2:
                 idx = 1

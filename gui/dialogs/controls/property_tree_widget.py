@@ -3,6 +3,8 @@ Property tree widget
 Translated from C++ PropertyTreeWidget.h/cpp
 """
 
+import logging
+
 from PyQt6.QtCore import Qt, QRect, QModelIndex, QItemSelection
 from PyQt6.QtWidgets import (
     QWidget,
@@ -21,6 +23,8 @@ from imagingcontrol4.properties import PropertyVisibility, PropCategory
 from imagingcontrol4.grabber import Grabber
 from typing import Optional, Callable
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 from .property_tree_model import (
     PropertyTreeModel,
@@ -110,7 +114,6 @@ class PropertyTreeItemDelegate(QStyledItemDelegate):
             if widget:
                 widget.setContentsMargins(0, 0, 8, 0)  # Match C++ right margin
             else:
-                # Log when no widget was created
                 prop_name = "<unknown>"
                 try:
                     prop_name = (
@@ -118,7 +121,7 @@ class PropertyTreeItemDelegate(QStyledItemDelegate):
                     )
                 except Exception:
                     pass
-                print(f"Debug: No editor widget created for property '{prop_name}'")
+                logger.debug("No editor widget created for property '%s'", prop_name)
 
             return widget
         except Exception as e:
@@ -129,9 +132,7 @@ class PropertyTreeItemDelegate(QStyledItemDelegate):
                 )
             except Exception:
                 pass
-            print(
-                f"Error: Exception in createEditor for property '{prop_name}': {type(e).__name__}: {e}"
-            )
+            logger.warning("Exception in createEditor for property '%s': %s: %s", prop_name, type(e).__name__, e)
             return None
 
 
@@ -447,7 +448,7 @@ class PropertyTreeWidget(QWidget):
             self.delegate_.update_grabber(grabber)
             self._update_model_internal(PropertyTreeModel(cat, self))
         except Exception:
-            pass
+            logger.warning("Failed to update property tree model", exc_info=True)
 
     def set_property_filter(self, accept_prop: Callable):
         """Set a custom filter function"""

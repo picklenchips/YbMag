@@ -1,11 +1,6 @@
 # Yb Magnetometer Control & Simulation
 
-> Experimental control, simulation, and digital twin of the Yb magnetometer experiment. 
-> `PyQt6` GUI for central control of all modules. 
-> `QuTiP` fluorescence simulation. 
-> `PyTorch` ML pipeline for B-field extraction. 
-> `opencv` for image processing and analysis.
-
+> Experimental control, simulation, and digital twin of the [Hollberg Yb magnetometer experiment](https://hollberglab.stanford.edu/research-projects/atomic-yb-magnetometer). 
 
 Run `python app.py` to launch the GUI.
 
@@ -36,7 +31,10 @@ Demonstrate measurement of dynamic B fields at fast time dynamics, automate vect
 ### Image Analysis
 
 - [ ] **Remove scattering noise:** capture reference image (laser on, no fluorescence — drive static B past resonance); apply at various exposures for HDR-style correction; assume $I \propto P \Delta t$
-- [ ] Automatically identify and mask **bad pixels** (`np.nan`)
+- [ ] Automatically identify and mask **bad pixels** (`np.nan`). 
+  - [ ] Script to do this by taking two images before running experiment: one as bright as possible with room lights on, one as dark as possible. 
+  - [ ] Use this to identify any pixels that are consistently dark or bright and return an `np.ndarray` of the same shape as the images, with `np.nan` in the positions of the bad pixels. 
+  - [ ] This script should be reusable for any image analysis workflow where bad pixels need to be identified and masked.
 - [ ] **Alignment:** auto-align to atom $\bar{\mathbf{v}}$ using OpenCV bounding box (with blur)
 - [ ] **Dark line extraction:** find local minima along center $\bar{\mathbf{v}}$ line; threshold via max of dark-line mins; connected components for dark/light blobs; fit line equations and rings
 - [ ] Moving average display using `ImageBuffer`; apply arbitrary image analysis (OpenCV filters, edge detection, colormap) via Python connection

@@ -9,6 +9,7 @@ Polls measurement data in a background thread to keep the GUI responsive.
 
 from __future__ import annotations
 
+import logging
 import sys
 import json
 from pathlib import Path
@@ -39,6 +40,7 @@ from .controls.basic_slider import BasicSlider
 from ..resources.style_manager import get_style_manager
 
 SETTINGS_PATH = Path(__file__).parent.parent / "settings" / "settings.json"
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Helper: Settings loader
@@ -51,6 +53,7 @@ def _load_settings() -> Dict[str, Any]:
         with open(SETTINGS_PATH, "r") as f:
             return json.load(f)
     except Exception:
+        logger.warning("Failed to load settings from %s", SETTINGS_PATH, exc_info=True)
         return {}
 
 

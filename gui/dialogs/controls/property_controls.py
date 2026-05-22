@@ -3,8 +3,12 @@ Factory for creating property controls
 Translated from C++ ic4-examples/PropertyControls.cpp
 """
 
+import logging
+
 from PyQt6.QtWidgets import QWidget, QLabel
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 import imagingcontrol4 as ic4
 from .props.prop_control_base import PropSelectedFunction, StreamRestartFilterFunction
@@ -83,7 +87,5 @@ def create_prop_control(
             prop_type = prop.type.name if hasattr(prop.type, "name") else str(prop.type)
         except Exception:
             pass
-        print(
-            f"Warning: Failed to create control for property '{prop_name}' (type: {prop_type}): {type(e).__name__}: {e}"
-        )
+        logger.warning("Failed to create control for property '%s' (type: %s): %s: %s", prop_name, prop_type, type(e).__name__, e)
         return None

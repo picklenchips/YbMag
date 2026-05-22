@@ -4,6 +4,7 @@ Simplified translation from C++ DeviceSelectionDialog.h/cpp
 """
 
 import gc
+import logging
 
 from PyQt6.QtCore import Qt, QEvent, QSize
 from PyQt6.QtWidgets import (
@@ -35,6 +36,8 @@ from imagingcontrol4.library import Library
 
 # local imports
 from ..resources.style_manager import get_style_manager
+
+logger = logging.getLogger(__name__)
 
 
 class DeviceSelectionDialog(QDialog):
@@ -78,7 +81,7 @@ class DeviceSelectionDialog(QDialog):
                 )
             )
         except Exception:
-            pass
+            logger.warning("Failed to register device-list-changed event", exc_info=True)
 
     def customEvent(self, event: QEvent):
         """Handle custom events"""
@@ -235,7 +238,7 @@ class DeviceSelectionDialog(QDialog):
         try:
             interfaces = DeviceEnum.interfaces()
         except Exception as e:
-            print(f"Error enumerating interfaces: {e}")
+            logger.exception("Failed to enumerate camera interfaces")
             interfaces = []
 
         if not interfaces:
@@ -355,7 +358,7 @@ class DeviceSelectionDialog(QDialog):
                 itf_item.setExpanded(True)
 
             except Exception as e:
-                print(f"Error processing interface: {e}")
+                logger.exception("Error processing interface")
 
         if num_displayed == 0 and any_devices:
             item = QTreeWidgetItem(self.camera_tree)
@@ -713,9 +716,7 @@ class DeviceSelectionDialog(QDialog):
             )
             return
 
-        print(
-            f"[_on_ok] is_device_open={self.grabber.is_device_open}, is_streaming={self.grabber.is_streaming}"
-        )
+        logger.debug("_on_ok: is_device_open=%s, is_streaming=%s", self.grabber.is_device_open, self.grabber.is_streaming)
 
         try:
             # Check if selected device is already open
@@ -723,12 +724,11 @@ class DeviceSelectionDialog(QDialog):
             if self.grabber.is_device_open:
                 try:
                     current_device_info = self.grabber.device_info
-                    # Compare using unique_name which uniquely identifies a device
                     if current_device_info.unique_name == device.unique_name:
                         already_open = True
-                        print("[_on_ok] Same device already open, accepting")
+                        logger.debug("Same device already open, accepting")
                 except Exception as e:
-                    print(f"[_on_ok] unique_name comparison failed: {e}")
+                    logger.warning("unique_name comparison failed: %s", e)
 
             if already_open:
                 # Already connected to this device, just close dialog
@@ -737,31 +737,22 @@ class DeviceSelectionDialog(QDialog):
 
             # Close existing device if one is open
             if self.grabber.is_device_open:
-                print("[_on_ok] Closing existing device before opening new one")
+                logger.info("Closing existing device before opening new one")
                 try:
                     self.grabber.stream_stop()
                 except Exception as e:
-                    print(f"[_on_ok] stream_stop() error: {e}")
+                    logger.warning("stream_stop() error during device switch: %s", e)
                 self.grabber.device_close()
-                print(
-                    f"[_on_ok] device_close() done, is_device_open={self.grabber.is_device_open}"
-                )
+                logger.info("device_close() done, is_device_open=%s", self.grabber.is_device_open)
 
-                # Force garbage collection to ensure C++ resources are released
-                import gc
-
-                print("[_on_ok] Running garbage collection...")
                 gc.collect()
-                print("[_on_ok] GC complete")
 
-            print(f"[_on_ok] Opening device: {device.model_name} [{device.serial}]")
+            logger.info("Opening device: %s [%s]", device.model_name, device.serial)
             self.grabber.device_open(device)
-            print(
-                f"[_on_ok] device_open() succeeded, is_device_open={self.grabber.is_device_open}"
-            )
+            logger.info("device_open() succeeded, is_device_open=%s", self.grabber.is_device_open)
             self.accept()
         except Exception as e:
-            print(f"[_on_ok] FAILED: {e}")
+            logger.exception("Failed to open camera device")
             QMessageBox.critical(
                 self, "Error Opening Device", f"Failed to open device:\n{str(e)}"
             )

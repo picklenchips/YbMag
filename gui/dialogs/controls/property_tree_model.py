@@ -3,6 +3,8 @@ Property tree model for displaying device properties
 Translated from C++ PropertyTreeWidget.h/cpp
 """
 
+import logging
+
 from PyQt6.QtCore import (
     QAbstractItemModel,
     QModelIndex,
@@ -19,6 +21,8 @@ from imagingcontrol4.properties import (
     PropCategory,
     PropertyVisibility,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class PropertyTreeNode:
@@ -48,7 +52,7 @@ class PropertyTreeNode:
             try:
                 self.prop_.event_remove_notification(self.notification_token_)
             except Exception:
-                pass
+                logger.debug("Failed to remove property notification", exc_info=True)
 
     def populate(self):
         """Lazily populate children"""
@@ -87,9 +91,9 @@ class PropertyTreeNode:
                             self.children_.append(child)
                             index += 1
                     except Exception as e:
-                        pass
+                        logger.debug("Failed to populate property child: %s", e)
             except Exception as e:
-                pass
+                logger.debug("Failed to enumerate property children: %s", e)
 
     def num_children(self) -> int:
         """Get number of children"""
@@ -122,13 +126,13 @@ class PropertyTreeNode:
                         item_changed(self)
                         self.prev_available_ = new_available
                 except Exception:
-                    pass
+                    logger.debug("Property availability notification failed", exc_info=True)
 
             self.notification_token_ = self.prop_.event_add_notification(
                 notification_handler
             )
         except Exception:
-            pass
+            logger.debug("Failed to set up property notification", exc_info=True)
 
     def clear(self):
         """Unregister notifications, recurse into children, and drop property reference."""
@@ -136,7 +140,7 @@ class PropertyTreeNode:
             try:
                 self.prop_.event_remove_notification(self.notification_token_)
             except Exception:
-                pass
+                logger.debug("Failed to remove notification during clear", exc_info=True)
             self.notification_token_ = None
         for child in self.children_:
             child.clear()
@@ -199,6 +203,7 @@ class PropertyTreeModel(QAbstractItemModel):
             self.tree_root_.children_.append(prop_root)
             self.prop_root_ = prop_root
         except Exception as e:
+            logger.warning("Failed to build property tree root: %s", e)
             self.prop_root_ = None
 
     def clear(self):
@@ -269,7 +274,7 @@ class PropertyTreeModel(QAbstractItemModel):
 
         parent_item = self._parent_item(parent)
         if not parent_item:
-            print("warning: no parent, but not root since column is {parent.column()}")
+            logger.warning("no parent but not root since column is %s", parent.column())
             return 0  # we should never get
         return parent_item.num_children()
 
@@ -307,6 +312,7 @@ class PropertyTreeModel(QAbstractItemModel):
                     return desc
                 return tree.display_name
             except Exception:
+                logger.debug("Failed to get property tooltip", exc_info=True)
                 return tree.display_name
 
         return QVariant()
@@ -356,19 +362,6 @@ class FilterPropertiesProxy(QSortFilterProxyModel):
             return False
 
         try:
-            # Debug: Log enumeration properties filtering
-            if child.prop_type == PropertyType.ENUMERATION:
-                prop_name = child.display_name
-                is_available = child.prop.is_available
-                visibility = child.prop.visibility
-                name_match = (
-                    self.filter_regex_.match(child.display_name).hasMatch()
-                    or self.filter_regex_.match(child.prop_name).hasMatch()
-                )
-                print(
-                    f"Debug Filter: ENUM '{prop_name}' - available={is_available}, visibility={visibility}, name_match={name_match}, threshold={self.visibility_}"
-                )
-
             if not child.prop.is_available:
                 return False
 
@@ -394,7 +387,5 @@ class FilterPropertiesProxy(QSortFilterProxyModel):
                 prop_name = child.display_name
             except Exception:
                 pass
-            print(
-                f"Warning: Exception in filterAcceptsRow for property '{prop_name}': {type(e).__name__}: {e}"
-            )
+            logger.warning("Exception in filterAcceptsRow for property '%s': %s: %s", prop_name, type(e).__name__, e)
             return False

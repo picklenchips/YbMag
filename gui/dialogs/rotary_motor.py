@@ -13,6 +13,7 @@ Provides controls for:
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, Future
 from typing import Optional, List, Dict, Any, Literal
@@ -41,6 +42,7 @@ from .controls.basic_slider import BasicSlider
 from ..resources.style_manager import get_style_manager
 
 SETTINGS_PATH = Path(__file__).parent.parent / "settings" / "settings.json"
+logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Helper: Settings loader
 # ---------------------------------------------------------------------------
@@ -52,6 +54,7 @@ def _load_settings() -> Dict[str, Any]:
         with open(SETTINGS_PATH, "r") as f:
             return json.load(f)
     except Exception:
+        logger.warning("Failed to load settings from %s", SETTINGS_PATH, exc_info=True)
         return {}
 
 
@@ -62,6 +65,7 @@ def _save_settings(settings: Dict[str, Any]) -> bool:
             json.dump(settings, f, indent=2)
         return True
     except Exception:
+        logger.exception("Failed to save settings to %s", SETTINGS_PATH)
         return False
 
 
@@ -562,6 +566,7 @@ class MaintenanceWidget(QWidget):
                 self._motor.clean_and_optimize()
             self._maintenance_signals.finished.emit()
         except Exception as e:
+            logger.exception("Motor maintenance operation failed")
             self._maintenance_signals.error.emit(str(e))
 
     def _stop_maintenance(self) -> None:
@@ -657,7 +662,8 @@ class MaintenanceWidget(QWidget):
             self._maintenance_future.result(timeout=timeout)
             return True
         except Exception:
-            return False  # Timeout or error occurred
+            logger.debug("Maintenance future timed out or errored", exc_info=True)
+            return False
 
 
 # ---------------------------------------------------------------------------
@@ -779,6 +785,7 @@ class RotaryMotorDialog(QDialog):
             self._motor = ELLMotor(port=self._port, verbose=False)
             self._connection_signals.connected.emit()
         except Exception as e:
+            logger.exception("Failed to connect to ELLMotor on port %s", self._port)
             self._connection_signals.error.emit(str(e))
 
     def _on_connected(self) -> None:
@@ -827,11 +834,12 @@ class RotaryMotorDialog(QDialog):
                     try:
                         self._motor.stop_cleaning()
                     except Exception:
-                        pass
+                        logger.debug("stop_cleaning() failed during disconnect (may be expected)", exc_info=True)
                     self.maintenance_widget.wait_for_completion(timeout=10)
                 self._motor.disconnect()
             self._connection_signals.disconnected.emit()
         except Exception as e:
+            logger.exception("Failed to disconnect from ELLMotor")
             self._connection_signals.error.emit(str(e))
 
     def _on_disconnected(self) -> None:
@@ -916,7 +924,7 @@ class RotaryMotorDialog(QDialog):
                 self._motor.get_position()
                 self._motor.get_jog_step_size()
         except Exception:
-            pass  # Silent fail on query errors
+            logger.warning("Motor poll query failed", exc_info=True)
         # Signal main thread
         self._poll_signals.finished.emit()
 
@@ -958,14 +966,14 @@ class RotaryMotorDialog(QDialog):
         if self.maintenance_widget and self.maintenance_widget.is_running():
             timeout_ok = self.maintenance_widget.wait_for_completion(timeout=60)
             if not timeout_ok:
-                print("WARNING: Maintenance timeout during cleanup, forcing shutdown")
+                logger.warning("Maintenance timed out during cleanup, forcing shutdown")
 
         self._executor.shutdown(wait=True)
         try:
             if self._motor:
                 self._motor.disconnect()
         except Exception:
-            pass
+            logger.warning("Failed to disconnect motor during cleanup", exc_info=True)
 
     def apply_theme(self) -> None:
         """Apply the current theme to this dialog."""

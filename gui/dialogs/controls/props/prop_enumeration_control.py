@@ -170,7 +170,7 @@ class PropEnumerationControl(PropControlBase):
 
                         # Get value safely
                         try:
-                            val = entry.value
+                            val = entry.int_value
                         except Exception:
                             continue
 
@@ -188,9 +188,9 @@ class PropEnumerationControl(PropControlBase):
                     except Exception:
                         pass
 
-                # If no entry was selected by value, select the first available entry
-                if not current_index_set and self.combo.count() > 0:
-                    self.combo.setCurrentIndex(0)
+                # If no entry was selected by value, clear the selection (matches C++)
+                if not current_index_set:
+                    self.combo.setCurrentIndex(-1)
 
                 # If combo is empty, disable it and show indicator
                 if self.combo.count() == 0:

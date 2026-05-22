@@ -1,9 +1,12 @@
 from threading import Lock
 import gc
 import json
+import logging
 import subprocess
 from pathlib import Path
 from typing import cast
+
+logger = logging.getLogger(__name__)
 
 # PyQT6 imports
 from PyQt6.QtCore import (
@@ -86,6 +89,7 @@ class MainWindow(QMainWindow):
             with open(SETTINGS_PATH, "r") as f:
                 _startup_settings = json.load(f)
         except Exception:
+            logger.warning("Failed to load startup settings from %s", SETTINGS_PATH, exc_info=True)
             _startup_settings = {}
         self.save_pictures_directory = _startup_settings.get(
             "default_image_directory", default_pictures
@@ -179,7 +183,7 @@ class MainWindow(QMainWindow):
                     try:
                         main_window.video_writer.add_frame(buf)
                     except IC4Exception as ex:
-                        pass
+                        logger.debug("add_frame dropped a buffer: %s", ex)
 
         self.sink = QueueSink(Listener())
 
@@ -202,6 +206,7 @@ class MainWindow(QMainWindow):
             self.display = self.video_widget.as_display()
             self.display.set_render_position(DisplayRenderPosition.STRETCH_CENTER)
         except Exception as e:
+            logger.exception("Failed to initialise display widget")
             QMessageBox.critical(self, "", f"{e}", QMessageBox.StandardButton.Ok)
 
         if QFileInfo.exists(self.device_file):
@@ -209,6 +214,7 @@ class MainWindow(QMainWindow):
                 self.grabber.device_open_from_state_file(self.device_file)
                 self.onDeviceOpened()
             except Exception as e:
+                logger.exception("Failed to open device from state file")
                 QMessageBox.information(
                     self,
                     "",
@@ -222,6 +228,7 @@ class MainWindow(QMainWindow):
                     self.codec_config_file
                 )
             except Exception as e:
+                logger.exception("Failed to load codec configuration from state file")
                 QMessageBox.information(
                     self,
                     "",
@@ -530,11 +537,13 @@ class MainWindow(QMainWindow):
                     self, "Camera Reset", "No device property map available."
                 )
         except Exception as e:
+            logger.exception("Camera reset failed")
             QMessageBox.critical(self, "Camera Reset", f"Failed to reset camera: {e}")
 
     def onCloseDevice(self):
-        print(
-            f"[onCloseDevice] is_device_open={self.grabber.is_device_open}, is_streaming={self.grabber.is_streaming}"
+        logger.info(
+            "onCloseDevice: is_device_open=%s, is_streaming=%s",
+            self.grabber.is_device_open, self.grabber.is_streaming,
         )
 
         if self.capture_to_video:
@@ -544,9 +553,9 @@ class MainWindow(QMainWindow):
         # to handle edge cases where the flag is stale.
         try:
             self.grabber.stream_stop()
-            print("[onCloseDevice] stream_stop() succeeded")
+            logger.info("onCloseDevice: stream_stop() succeeded")
         except Exception as e:
-            print(f"[onCloseDevice] stream_stop() error (may be expected): {e}")
+            logger.warning("onCloseDevice: stream_stop() error (may be expected): %s", e)
 
         # Release ALL references to IC4 native objects before device_close().
         # The IC4 C library ref-counts native handles; if any Python object still
@@ -566,7 +575,7 @@ class MainWindow(QMainWindow):
                     self._trigger_mode_notify
                 )
             except Exception:
-                pass
+                logger.debug("Failed to remove trigger-mode notification (may be expected during cleanup)", exc_info=True)
         self._trigger_mode_prop = None
         self._trigger_mode_notify = None
 
@@ -586,12 +595,12 @@ class MainWindow(QMainWindow):
 
         try:
             self.grabber.device_close()
-            print(
-                f"[onCloseDevice] device_close() succeeded, is_device_open={self.grabber.is_device_open}"
+            logger.info(
+                "onCloseDevice: device_close() succeeded, is_device_open=%s",
+                self.grabber.is_device_open,
             )
-            print("[onCloseDevice] *** DEVICE CLOSED ***")
         except Exception as e:
-            print(f"[onCloseDevice] device_close() FAILED: {e}")
+            logger.exception("onCloseDevice: device_close() failed")
             QMessageBox.warning(
                 self,
                 "Warning",
@@ -800,6 +809,7 @@ class MainWindow(QMainWindow):
                 PropId.TRIGGER_MODE, self.trigger_mode_act.isChecked()
             )
         except Exception as e:
+            logger.exception("Failed to set trigger mode")
             QMessageBox.critical(self, "", f"{e}", QMessageBox.StandardButton.Ok)
 
     def onShootPhoto(self):
@@ -818,7 +828,7 @@ class MainWindow(QMainWindow):
             height = prop_map.get_value_int(PropId.HEIGHT)
             return (offset_x, offset_y, width, height)
         except Exception as e:
-            print(f"Error getting ROI state: {e}")
+            logger.warning("Failed to read ROI state: %s", e)
             return None
 
     def _save_roi_to_history(self):
@@ -841,6 +851,7 @@ class MainWindow(QMainWindow):
             offset_y = prop_map.get_value_int(PropId.OFFSET_Y)
             self.video_widget.set_pixel_coord_offset(offset_x, offset_y)
         except Exception:
+            logger.warning("Failed to sync pixel coordinate offset; defaulting to (0, 0)", exc_info=True)
             self.video_widget.set_pixel_coord_offset(0, 0)
 
     def _apply_roi_state(self, offset_x: int, offset_y: int, width: int, height: int):
@@ -854,7 +865,7 @@ class MainWindow(QMainWindow):
             try:
                 self.grabber.stream_stop()
             except Exception as e:
-                print(f"Error stopping stream: {e}")
+                logger.exception("Failed to stop stream before applying ROI")
                 return False
 
         try:
@@ -957,6 +968,7 @@ class MainWindow(QMainWindow):
             self._sync_pixel_coord_offset()
             return True
         except Exception as e:
+            logger.exception("Failed to apply ROI to camera")
             QMessageBox.critical(
                 self, "Error Applying ROI", f"Failed to apply ROI to camera:\n{str(e)}"
             )
@@ -967,7 +979,7 @@ class MainWindow(QMainWindow):
                 try:
                     self.grabber.stream_setup(self.sink, self.display)
                 except Exception as e:
-                    print(f"Error restarting stream: {e}")
+                    logger.exception("Failed to restart stream after ROI change")
 
     def onApplyROI(self):
         """Apply the drawn ROI to the camera's actual sensor region."""
@@ -993,6 +1005,7 @@ class MainWindow(QMainWindow):
                 PropId.OFFSET_Y
             )
         except Exception:
+            logger.warning("Failed to read current camera offsets; defaulting to (0, 0)", exc_info=True)
             current_offset_x = 0
             current_offset_y = 0
 
@@ -1032,6 +1045,7 @@ class MainWindow(QMainWindow):
             self._apply_roi_state(0, 0, max_width, max_height)
 
         except Exception as e:
+            logger.exception("Failed to reset camera ROI")
             QMessageBox.critical(
                 self, "Error Resetting ROI", f"Failed to reset camera ROI:\n{str(e)}"
             )
@@ -1087,9 +1101,7 @@ class MainWindow(QMainWindow):
             width: Width of ROI in pixels
             height: Height of ROI in pixels
         """
-        print(
-            f"ROI Selected - Offset: ({offset_x}, {offset_y}), Size: {width}x{height}"
-        )
+        logger.debug("ROI selected: offset=(%d, %d), size=%dx%d", offset_x, offset_y, width, height)
 
         # TODO: Add UI to confirm and apply ROI to camera
         # For now, just print the values
@@ -1116,7 +1128,7 @@ class MainWindow(QMainWindow):
             )
             self.statistics_label.setToolTip(tooltip)
         except Exception:
-            pass
+            logger.warning("Failed to update statistics label", exc_info=True)
 
     def onDeviceLost(self):
         QMessageBox.warning(
@@ -1159,6 +1171,7 @@ class MainWindow(QMainWindow):
                 )
                 self.trigger_mode_act.setEnabled(True)
             except Exception:
+                logger.warning("Failed to read trigger mode state", exc_info=True)
                 self.trigger_mode_act.setChecked(False)
                 self.trigger_mode_act.setEnabled(False)
 
@@ -1185,6 +1198,7 @@ class MainWindow(QMainWindow):
             self.camera_label.setText(f"{info.model_name} {info.serial}")
             self.camera_label.setEnabled(True)
         except Exception:
+            logger.warning("Failed to read camera device info", exc_info=True)
             self.camera_label.setText("No Device")
             self.camera_label.setEnabled(True)
 
@@ -1263,12 +1277,13 @@ class MainWindow(QMainWindow):
                 fps = self.device_property_map.get_value_float(
                     PropId.ACQUISITION_FRAME_RATE
                 )
-        except:
-            pass
+        except Exception:
+            logger.debug("Could not read acquisition frame rate; using default", exc_info=True)
 
         try:
             self.video_writer.begin_file(full_path, self.sink.output_image_type, fps)
         except Exception as e:
+            logger.exception("Failed to begin video file at %s", full_path)
             QMessageBox.critical(self, "", f"{e}", QMessageBox.StandardButton.Ok)
             self.updateControls()
             return
@@ -1445,7 +1460,7 @@ class MainWindow(QMainWindow):
                     settings = json.load(f)
                     port = settings.get("rotary_motors", {}).get("port")
             except Exception:
-                pass
+                logger.debug("Could not read rotary motor port from settings", exc_info=True)
 
             self.rotary_motor_dialog = RotaryMotorDialog(port=port, parent=self)
             self.rotary_motor_dialog.apply_theme()
@@ -1518,6 +1533,7 @@ class MainWindow(QMainWindow):
                     self.grabber.stream_setup(self.sink, self.display)
 
         except Exception as e:
+            logger.exception("Failed to toggle live stream")
             QMessageBox.critical(self, "", f"{e}", QMessageBox.StandardButton.Ok)
 
         self.updateControls()
@@ -1551,6 +1567,7 @@ class MainWindow(QMainWindow):
                 )
                 self._show_file_in_status_bar(full_path)
             except Exception as e:
+                logger.exception("Failed to save image to %s", full_path)
                 QMessageBox.critical(self, "", f"{e}", QMessageBox.StandardButton.Ok)
             return
 
@@ -1579,6 +1596,7 @@ class MainWindow(QMainWindow):
                     image_buffer.save_as_tiff(full_path)
                 self._show_file_in_status_bar(full_path)
             except Exception as e:
+                logger.exception("Failed to save image to %s", full_path)
                 QMessageBox.critical(self, "", f"{e}", QMessageBox.StandardButton.Ok)
 
     @staticmethod

@@ -20,6 +20,7 @@ Widgets:
 from __future__ import annotations
 
 import json
+import logging
 import math
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -90,6 +91,7 @@ from .controls.engineering_slider import (
 from ..resources.style_manager import get_style_manager
 
 SETTINGS_PATH = Path(__file__).parent.parent / "settings" / "settings.json"
+logger = logging.getLogger(__name__)
 
 # Channel colors (matching plan §3.2)
 CHANNEL_COLORS = [
@@ -131,6 +133,7 @@ def _load_settings() -> Dict[str, Any]:
         with open(SETTINGS_PATH, "r") as f:
             return json.load(f)
     except Exception:
+        logger.warning("Failed to load settings from %s", SETTINGS_PATH, exc_info=True)
         return {}
 
 
@@ -223,15 +226,13 @@ class _ConnectionWidget(QWidget):
         layout.addWidget(self._status_label)
 
     def refresh_devices(self) -> None:
-        print("[DigilentDialog] refresh_devices called")
+        logger.debug("refresh_devices called")
         self._device_combo.clear()
         try:
             self._devices = enumerate_devices()
-            print(
-                f"[DigilentDialog] enumerate_devices returned {len(self._devices)} device(s): {self._devices}"
-            )
+            logger.debug("enumerate_devices returned %d device(s): %s", len(self._devices), self._devices)
         except Exception as e:
-            print(f"[DigilentDialog] enumerate_devices exception: {e}")
+            logger.exception("enumerate_devices failed")
             self._devices = []
 
         if not self._devices:
@@ -250,7 +251,7 @@ class _ConnectionWidget(QWidget):
         self._device_combo.setCurrentIndex(select_idx)
 
     def _on_connect_clicked(self) -> None:
-        print("[DigilentDialog] _on_connect_clicked fired")
+        logger.debug("_on_connect_clicked fired")
         self._connect_btn.setEnabled(False)  # prevent double-click
         self.connected.emit(True)
 
@@ -1545,7 +1546,7 @@ class DigilentDialog(QDialog):
     # -- Connection --
 
     def _on_connect_toggle(self, _: bool) -> None:
-        print(f"[DigilentDialog] _on_connect_toggle, is_connected={self._is_connected}")
+        logger.debug("_on_connect_toggle: is_connected=%s", self._is_connected)
         if self._is_connected:
             self._disconnect()
         else:
@@ -1553,25 +1554,19 @@ class DigilentDialog(QDialog):
 
     def _connect(self) -> None:
         idx = self._connection.selected_device_index()
-        print(f"[DigilentDialog] _connect called, selected device index={idx}")
+        logger.debug("_connect called, selected device index=%d", idx)
         if idx < 0:
-            print("[DigilentDialog] _connect: no device selected (idx < 0), aborting")
+            logger.debug("_connect: no device selected (idx < 0), aborting")
             return
 
         try:
-            print(f"[DigilentDialog] creating Digilent(device_index={idx})")
             self._digilent = Digilent(device_index=idx)
-            print(f"[DigilentDialog] calling Digilent.open({idx})")
             self._digilent.open(idx)
-            print(
-                f"[DigilentDialog] open() succeeded, hdwf={self._digilent._hdwf.value}"
-            )
+            logger.info("Digilent opened, hdwf=%s", self._digilent._hdwf.value)
             self._is_connected = True
             self._connection.set_connected(True)
             self._status_bar.set_clock(self._digilent._internal_clock_hz)
-            print(
-                f"[DigilentDialog] connected, clock={self._digilent._internal_clock_hz} Hz"
-            )
+            logger.info("Digilent connected, clock=%d Hz", self._digilent._internal_clock_hz)
 
             # Save last device serial
             serial = self._connection.selected_serial()
@@ -1579,22 +1574,22 @@ class DigilentDialog(QDialog):
                 settings = _load_settings()
                 settings.setdefault("digilent", {})["last_device_serial"] = serial
                 _save_settings(settings)
-                print(f"[DigilentDialog] saved last_device_serial={serial}")
+                logger.debug("Saved last_device_serial=%s", serial)
 
         except Exception as e:
-            print(f"[DigilentDialog] _connect exception: {e}")
+            logger.exception("Failed to connect to Digilent device")
             QMessageBox.critical(self, "Connection Error", str(e))
             self._digilent = None
 
     def _disconnect(self) -> None:
-        print("[DigilentDialog] _disconnect called")
+        logger.debug("_disconnect called")
         if self._digilent:
             try:
                 self._digilent.stop_all()
             except Exception as e:
-                print(f"[DigilentDialog] stop_all() exception (ignored): {e}")
+                logger.warning("stop_all() failed during disconnect (ignored): %s", e)
             self._digilent.close()
-            print("[DigilentDialog] device closed")
+            logger.info("Digilent device closed")
             self._digilent = None
         self._is_connected = False
         self._connection.set_connected(False)
@@ -1627,6 +1622,7 @@ class DigilentDialog(QDialog):
                 d.start()
                 self._poll_signals.pattern_status.emit()
         except Exception as e:
+            logger.exception("Digital channel configure failed")
             self._poll_signals.error.emit(str(e))
 
     def _refresh_waveform_preview(self) -> None:
@@ -1647,19 +1643,18 @@ class DigilentDialog(QDialog):
         try:
             d = self._digilent
             if not d:
-                print("[DigilentDialog] _start_worker: no device")
+                logger.debug("_start_worker: no device")
                 return
-            print("[DigilentDialog] _start_worker: configuring channels")
+            logger.debug("_start_worker: configuring channels")
             configs = self._channel_panel.get_all_configs()
             d.configure_all_digital(configs)
             d.set_trigger_source(self._global_controls.trigger_source_index)
             d.set_repeat_count(self._global_controls.repeat_count)
-            print("[DigilentDialog] _start_worker: starting")
             d.start()
             self._poll_signals.pattern_status.emit()
-            print("[DigilentDialog] _start_worker: started successfully")
+            logger.debug("_start_worker: started successfully")
         except Exception as e:
-            print(f"[DigilentDialog] _start_worker exception: {e}")
+            logger.exception("Pattern start failed")
             self._poll_signals.error.emit(str(e))
 
     def _on_stop(self) -> None:
@@ -1686,6 +1681,7 @@ class DigilentDialog(QDialog):
                 self._digilent.start()
                 self._poll_signals.pattern_status.emit()
         except Exception as e:
+            logger.exception("Pattern restart failed")
             self._poll_signals.error.emit(str(e))
 
     def _stop_worker(self) -> None:
@@ -1694,6 +1690,7 @@ class DigilentDialog(QDialog):
                 self._digilent.stop()
                 self._poll_signals.pattern_status.emit()
         except Exception as e:
+            logger.exception("Pattern stop failed")
             self._poll_signals.error.emit(str(e))
 
     def _on_trigger(self) -> None:
@@ -1705,6 +1702,7 @@ class DigilentDialog(QDialog):
             if self._digilent:
                 self._digilent.trigger()
         except Exception as e:
+            logger.exception("Manual trigger failed")
             self._poll_signals.error.emit(str(e))
 
     # -- Wavegen --
@@ -1721,8 +1719,9 @@ class DigilentDialog(QDialog):
             if self._digilent and self._digilent.connected:
                 self._digilent.generate_wavegen(config)
                 wg = self._digilent.get_wavegen_state()
-                print(f"[wavegen] started: {wg}")
+                logger.debug("Wavegen started: %s", wg)
         except Exception as e:
+            logger.exception("Wavegen start failed")
             self._poll_signals.error.emit(str(e))
 
     def _on_wavegen_stop(self, channel: int) -> None:
@@ -1734,6 +1733,7 @@ class DigilentDialog(QDialog):
             if self._digilent and self._digilent.connected:
                 self._digilent.stop_wavegen(channel)
         except Exception as e:
+            logger.exception("Wavegen stop failed for channel %d", channel)
             self._poll_signals.error.emit(str(e))
 
     # -- Scope --
@@ -1760,6 +1760,7 @@ class DigilentDialog(QDialog):
             )
             d.start_scope()
         except Exception as e:
+            logger.exception("Scope arm failed")
             self._poll_signals.error.emit(str(e))
 
     def _on_stop_scope(self) -> None:
@@ -1771,6 +1772,7 @@ class DigilentDialog(QDialog):
             if self._digilent:
                 self._digilent.stop_scope()
         except Exception as e:
+            logger.exception("Scope stop failed")
             self._poll_signals.error.emit(str(e))
 
     # -- Background polling --
@@ -1796,7 +1798,7 @@ class DigilentDialog(QDialog):
                             self._latest_scope_data[ch] = acq
                             self._poll_signals.scope_data.emit(ch)
         except Exception as e:
-            print(f"[DigilentDialog] poll_worker exception: {e}")
+            logger.exception("Poll worker failed")
             self._poll_signals.error.emit(str(e))
         finally:
             self._poll_busy = False

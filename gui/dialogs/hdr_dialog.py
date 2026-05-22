@@ -7,11 +7,14 @@ Works with the main camera stream from MainWindow without interfering with lives
 
 from __future__ import annotations
 
+import logging
 import time
 import threading
 import cv2
 import numpy as np
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from PyQt6.QtWidgets import (
     QDialog,
@@ -96,13 +99,13 @@ class HDRListener(QueueSinkListener):
 
         if self.capture:
             self.counter = self.counter + 1
-            print(f"HDR: Captured image {self.counter}/{self.frames_to_capture}")
+            logger.debug("HDR: Captured image %d/%d", self.counter, self.frames_to_capture)
             self.buffer_list.append(buffer)
             # End capture after desired number of frames.
             if self.counter >= self.frames_to_capture:
                 self.capture_end_event.set()
                 self.capture = False
-                print("HDR: Capture complete")
+                logger.debug("HDR: Capture complete")
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +314,7 @@ class HDRDialog(QDialog):
             for buffer in self.listener.buffer_list:
                 buffer_list.append(buffer)
         else:
-            print("Timeout during multi-frame capture")
+            logger.warning("Timeout during multi-frame capture")
 
         prop_map.set_value(PropId.MULTI_FRAME_SET_OUTPUT_MODE_ENABLE, False)
 
@@ -340,7 +343,7 @@ class HDRDialog(QDialog):
         if success:
             buffer_list.append(self.listener.buffer_list[0])
         else:
-            print("Timeout during software trigger capture")
+            logger.warning("Timeout during software trigger capture")
 
     def acquire_software_trigger(
         self, prop_map: PropertyMap, exposure_times: list[float]
@@ -410,6 +413,7 @@ class HDRDialog(QDialog):
                     )
 
                 except IC4Exception:
+                    logger.warning("Multi-frame output mode failed, falling back to software trigger", exc_info=True)
                     buffer_list = self.acquire_software_trigger(
                         prop_map, exposure_times
                     )
@@ -419,14 +423,14 @@ class HDRDialog(QDialog):
                     return
 
                 wrap_list = [b.numpy_wrap() for b in buffer_list]
-                print(f"Time taken to capture images was {time.time()-start} seconds")
+                logger.debug("Time taken to capture images: %.3fs", time.time() - start)
 
                 # Merge Mertens is used as HDR image merger
                 merger = cv2.createMergeMertens()
                 res_merger = merger.process(wrap_list)
                 res_8bit = np.clip(res_merger * 255, 0, 255).astype("uint8")
 
-                print(f"Time taken to run the code was {time.time()-start} seconds")
+                logger.debug("Total HDR pipeline time: %.3fs", time.time() - start)
 
                 # Save the captured and processed images
                 for i, b in enumerate(buffer_list):
@@ -444,6 +448,7 @@ class HDRDialog(QDialog):
                 self._poll_signals.finished.emit()
 
             except Exception as e:
+                logger.exception("HDR capture worker failed")
                 self._poll_signals.error.emit(str(e))
 
         # Run in background thread

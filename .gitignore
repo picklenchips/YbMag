@@ -2,6 +2,7 @@
 # project-specific
 #
 old/
+logs/
 # ImagingControl4
 ic4-examples/
 # Digilent
