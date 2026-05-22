@@ -1,12 +1,21 @@
 # ~/bin/env python3
 """
-General utility functions for formatting, typing, file management, timing. 
+General utility functions for formatting, typing, file management, timing.
+
+exports:
+- `ensure_new_file(fpath: str) -> str`: returns new `fpath=f(_i).ext` by incrementing `f(_i).ext` -> `f_{i+1}.ext` until new file is found. e.g. `f.ext` -> `f_0.ext` -> `f_1.ext` -> ...
+- `uFormat(number, uncertainty=0.0, figs=4, shift=0, ndecs=-1, math=False, metric=False, percent=False, metric_space=True, debug=False) -> str`: formats a number with its uncertainty according to PDG rules. See docstring for details and formatting options.
+- `timeIt(func, repeat=1, return_time=False, print_time=False)`: wrapper to time a function with various return options. See docstring for details and usage.
+- `alignNumbers(numbers: Sequence[str], inplace=False, figs=3) -> list[str]`: aligns numbers in a list of strings so that the decimal points are in the same column and all numbers have the same string length by adding spaces before and after the numbers. See docstring for details and usage.
+- `format_to_short(thing, maxlenstr=4)`: formats various types to short string representations of length <= maxlenstr. See docstring for details and usage.
+- `TO_METRIC` and `FROM_METRIC` dicts for converting to/from metric prefixes.
+- type aliases for int, float, complex, and number types that include both built-in and numpy types.
 """
 import time, os, warnings, functools
 from typing import Sequence, Iterable, Any
 import numpy as np
 from itertools import zip_longest
-
+np.set_printoptions(precision=4, suppress=True)
 INT = int | np.integer
 FLOAT = float | np.floating
 REAL = INT | FLOAT

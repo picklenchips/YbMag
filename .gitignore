@@ -1,3 +1,26 @@
+#
+# project-specific
+#
+old/
+# ImagingControl4
+ic4-examples/
+# Digilent
+waveforms/
+# images (for now) (not .png because those are our icons)
+*.jpg
+*.bmp
+*.png
+*.mp4
+# data
+images/
+videos/
+data/
+
+#
+# caches
+#
+# virtual environments
+.venv
 # Python-generated files
 __pycache__/
 *.py[oc]
@@ -5,23 +28,6 @@ build/
 dist/
 wheels/
 *.egg-info
-
 # extra
 .DS_store
 .vscode
-
-# Virtual environments
-.venv
-
-# custom
-ic4-examples/
-waveforms/
-old/
-images/
-videos/
-
-# images (for now) (not .png because those are our icons)
-*.jpg
-*.bmp
-*.png
-*.mp4

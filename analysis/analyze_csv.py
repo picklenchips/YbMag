@@ -1,6 +1,6 @@
 """
-2/27/26 (Ben) - Simple script to analyze the CSV of pixel intensities. Doesn't do much,
-but a good idea to allow GUI to also load and analyze images in the future.
+2/27/26 (Ben) - Simple script to analyze the CSV of pixel intensities.
+I would use `np.loadtxt` for the future.
 """
 
 import csv
